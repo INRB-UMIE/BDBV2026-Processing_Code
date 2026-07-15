@@ -1,0 +1,14 @@
+code,applies_to,label,description
+1,date,DATE_EPOCH_PLACEHOLDER,"Unix epoch placeholder date ({epoch_date})."
+2,date,DATE_OUT_OF_EPIDEMIC_WINDOW,"Date outside epidemic window {epidemic_start} to {epidemic_end}."
+3,date,DATE_IMPLAUSIBLE_YEAR,"Date year outside plausible range {plausible_year_min}-{plausible_year_max}."
+4,date_of_symptom_onset,DATE_ORDER_ONSET_AFTER_SAMPLE,date_of_symptom_onset is after date_of_sample_collection.
+5,date_of_symptom_onset,DATE_ORDER_ONSET_AFTER_NOTIFICATION,date_of_symptom_onset is after date_of_notification.
+6,date_of_symptom_onset,DATE_ORDER_ONSET_AFTER_REPORTING,date_of_symptom_onset is after reporting_date.
+7,date_of_symptom_onset,DATE_ORDER_ONSET_AFTER_INVESTIGATION,date_of_symptom_onset is after investigation_datetime.
+8,date_of_symptom_onset,DATE_ORDER_ONSET_AFTER_HOSPITALISATION,date_of_symptom_onset is after date_of_hospitalisation_start.
+9,date_of_hospitalisation_start,DATE_ORDER_HOSPITALISATION_START_AFTER_END,date_of_hospitalisation_start is after date_of_hospitalisation_end.
+10,date_of_sample_collection,DATE_ORDER_SAMPLE_AFTER_REPORTING,date_of_sample_collection is after reporting_date.
+11,age,AGE_OUT_OF_RANGE,"Combined age outside plausible range [{age_min_years}, {age_max_years}] years."
+12,age_months,AGE_MONTHS_OUT_OF_RANGE,"Age months outside plausible range [0, 11]."
+13,age,AGE_UNPARSEABLE,Age field is non-empty but could not be parsed as numeric years.

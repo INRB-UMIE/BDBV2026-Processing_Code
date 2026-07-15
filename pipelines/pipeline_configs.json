@@ -1,0 +1,91 @@
+{
+  "_comment": "Config for the epi linelist aggregation/nowcasting/plotting/mapping pipeline in this repo. Adapted from BDBV2026-Linelist_Processing's pipelines/pipeline_configs.json: this repo has no raw_subdir (no raw exports land here) and reads dhis2_processed_linelist_ctsafe.csv (the de-identified snapshot auto-synced from BDBV2026-Linelist_Processing) instead of the full dhis2_processed_linelist.csv. Update epi_linelist.nowcasting.analysis_start when the analytic window changes, to match the upstream repo's config.",
+  "version": "1",
+  "epi_linelist": {
+    "pipeline": {
+      "name": "dhis2_epi_linelist_downstream",
+      "steps": {
+        "1_delays_and_imputation": "pipelines/epi_linelist_pipeline/1-delays_and_imputation.R",
+        "2_aggregate": "pipelines/epi_linelist_pipeline/2-aggregate-linelist.R",
+        "3_nowcasting_prep": "pipelines/epi_linelist_pipeline/3-nowcasting_prep.R",
+        "4_dashboard_plots": "pipelines/epi_linelist_pipeline/4-make-dashboard-plots.R",
+        "5_map_residence_health_areas": "pipelines/epi_linelist_pipeline/5-map-residence-health-areas.R",
+        "6_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/6-residence-vs-alert-report.R"
+      }
+    },
+    "data": {
+      "processed_subdir": "data",
+      "files": {
+        "processed_linelist": "dhis2_processed_linelist_ctsafe.csv",
+        "linelist_with_delays": "dhis2_linelist_with_delays.csv",
+        "province_aggregated": "province_aggregated.csv",
+        "nowcasting_prep": "dhis2_nowcasting_prep.csv",
+        "nowcasting_daily_counts": "dhis2_nowcasting_daily_counts.csv",
+        "nowcasting_daily_counts_by_province": "dhis2_nowcasting_daily_counts_by_province.csv",
+        "nowcasting_run_metadata": "dhis2_nowcasting_run_metadata.json",
+        "nowcasting_qc_log": "dhis2_nowcasting_qc_log.csv",
+        "nowcasting_qc_codes": "dhis2_nowcasting_qc_codes.csv"
+      }
+    },
+    "nowcasting": {
+      "analysis_start": "2026-05-05",
+      "test_days": 5,
+      "trunc_cutoff_field": "date_of_sample_collection",
+      "obs_cutoff_fields": [
+        "reporting_date",
+        "date_of_symptom_onset",
+        "investigation_datetime",
+        "date_of_hospitalisation_start",
+        "date_of_hospitalisation_end",
+        "date_of_hospitalisation_end_2",
+        "date_of_notification",
+        "date_of_sample_collection"
+      ],
+      "daily_counts": {
+        "scope": "both",
+        "complete_series": true,
+        "series_start_field": "analysis_start",
+        "series_end_field": "trunc_cutoff"
+      },
+      "province": {
+        "min_confirmed_cases": 50,
+        "_min_confirmed_cases_note": "Provinces with total confirmed cases strictly greater than this value are included in province-level nowcasting and growth-rate outputs."
+      },
+      "delay": {
+        "primary_interval": "onset_to_sample_days",
+        "onset_field": "date_of_symptom_onset",
+        "report_field": "date_of_sample_collection",
+        "onset_end_field": "train_cutoff",
+        "min_days": 0,
+        "max_days": 60,
+        "require_positive": true
+      },
+      "growth": {
+        "primary_response": "d_pos",
+        "extended_response": "d_pos_plus_blank",
+        "positivity_roll_days": 5
+      }
+    },
+    "qc": {
+      "codes_file": "pipelines/epi_linelist_pipeline/qc_codes.csv",
+      "epidemic_start": "2026-04-01",
+      "epidemic_end": "2026-12-31",
+      "plausible_year_min": 2020,
+      "plausible_year_max": 2035,
+      "age_min_years": 0,
+      "age_max_years": 120,
+      "epoch_date": "1970-01-01",
+      "date_columns": [
+        "reporting_date",
+        "date_of_symptom_onset",
+        "investigation_datetime",
+        "date_of_hospitalisation_start",
+        "date_of_hospitalisation_end",
+        "date_of_hospitalisation_end_2",
+        "date_of_notification",
+        "date_of_sample_collection",
+        "lab_analysis_date"
+      ]
+    }
+  }
+}
