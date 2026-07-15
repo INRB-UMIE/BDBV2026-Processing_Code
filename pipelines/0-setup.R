@@ -22,12 +22,86 @@
 req_pkgs <- c(
   "readr", "dplyr", "tidyr", "purrr", "stringr",
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
-  "jsonlite", "binom", "slider", "fitdistrplus", "mgcv"
+  "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
+  "brms", "bayesplot", "loo"
 )
 
 for (p in req_pkgs) {
   if (!requireNamespace(p, quietly = TRUE)) {
     install.packages(p, repos = "https://cloud.r-project.org")
+  }
+}
+
+# epidist (delay-distribution fitting, used by 1-delays_and_imputation.R)
+# isn't on CRAN -- it's published on the epinowcast R-universe. cmdstanr (the
+# Stan backend epidist fits with) is on the Stan R-universe. Install these
+# from their own repos, falling back to CRAN for their regular dependencies.
+special_repo_pkgs <- list(
+  epidist = "https://epinowcast.r-universe.dev",
+  cmdstanr = "https://stan-dev.r-universe.dev"
+)
+
+for (p in names(special_repo_pkgs)) {
+  if (!requireNamespace(p, quietly = TRUE)) {
+    install.packages(p, repos = c(special_repo_pkgs[[p]], "https://cloud.r-project.org"))
+  }
+}
+
+# primarycensored is pinned to a specific (CRAN) version, not "whatever's
+# latest", because 1.4.0 made a breaking change to the Stan side: it added an
+# `L` (lower-truncation) parameter to primarycensored_lpmf/_lcdf/_cdf/_pmf,
+# changing their call signature. epidist's current release (0.4.0) hasn't
+# been updated to emit the new signature, so anything >=1.4.0 fails to
+# compile against it with an "Ill-typed arguments... Expected 9 arguments but
+# found 8" error. 1.3.0 predates that change.
+# See: https://primarycensored.epinowcast.org/news/index.html
+# If a newer epidist release adds support for the new signature, this pin
+# should be revisited/removed.
+PRIMARYCENSORED_PINNED_VERSION <- "1.3.0"
+primarycensored_ok <- requireNamespace("primarycensored", quietly = TRUE) &&
+  as.character(utils::packageVersion("primarycensored")) == PRIMARYCENSORED_PINNED_VERSION
+if (!primarycensored_ok) {
+  if (!requireNamespace("remotes", quietly = TRUE)) {
+    install.packages("remotes", repos = "https://cloud.r-project.org")
+  }
+  message(
+    "Installing primarycensored ", PRIMARYCENSORED_PINNED_VERSION,
+    " (pinned -- see comment above this block for why)..."
+  )
+  remotes::install_version(
+    "primarycensored",
+    version = PRIMARYCENSORED_PINNED_VERSION,
+    repos = "https://cloud.r-project.org"
+  )
+}
+
+# CmdStan itself (the actual Stan toolchain cmdstanr calls out to) is a heavy,
+# separate install -- can take 10-20 minutes the first time. Installed to a
+# fixed, known directory (overridable via CMDSTAN_INSTALL_DIR) rather than
+# cmdstanr's package default, specifically so CI can cache that exact path
+# (actions/cache) across runs instead of reinstalling on every sync.
+if (requireNamespace("cmdstanr", quietly = TRUE)) {
+  CMDSTAN_INSTALL_DIR <- Sys.getenv("CMDSTAN_INSTALL_DIR", file.path(Sys.getenv("HOME"), ".cmdstan"))
+
+  cmdstan_found <- !is.null(tryCatch(cmdstanr::cmdstan_version(), error = function(e) NULL))
+
+  # A cache restore (or a previous run) may have left a CmdStan install on
+  # disk at CMDSTAN_INSTALL_DIR without cmdstanr's *current* R session knowing
+  # about it -- point cmdstanr at the newest cmdstan-* subdirectory there
+  # before concluding it's actually missing.
+  if (!cmdstan_found && dir.exists(CMDSTAN_INSTALL_DIR)) {
+    existing <- list.dirs(CMDSTAN_INSTALL_DIR, recursive = FALSE)
+    existing <- existing[grepl("^cmdstan-", basename(existing))]
+    if (length(existing)) {
+      cmdstanr::set_cmdstan_path(sort(existing)[length(existing)])
+      cmdstan_found <- !is.null(tryCatch(cmdstanr::cmdstan_version(), error = function(e) NULL))
+    }
+  }
+
+  if (!cmdstan_found) {
+    message("CmdStan not found -- installing to ", CMDSTAN_INSTALL_DIR, " (this can take 10-20 minutes)...")
+    dir.create(CMDSTAN_INSTALL_DIR, recursive = TRUE, showWarnings = FALSE)
+    cmdstanr::install_cmdstan(dir = CMDSTAN_INSTALL_DIR)
   }
 }
 
@@ -47,6 +121,12 @@ suppressWarnings(suppressPackageStartupMessages({
   library(slider)
   library(HDInterval)
   library(fitdistrplus)
+  library(brms)
+  library(bayesplot)
+  library(loo)
+  library(epidist)
+  library(primarycensored)
+  library(cmdstanr)
 }))
 
 
