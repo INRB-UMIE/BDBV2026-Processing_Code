@@ -1,0 +1,562 @@
+---
+title: "Epi Linelist Pipeline — Summary Report"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M %Z')`"
+output:
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
+# Custom knit target: always renders to PDF, into this run's own
+# outputs/<DATE>/ folder (alongside status_aggregated.csv, dashboard_plots/,
+# etc.) rather than next to this .Rmd file, so "Knit" in RStudio (or
+# rmarkdown::render(<this file>) with no other arguments) just works.
+#
+# This has to resolve data_root/the latest synced date *before*
+# rmarkdown::render() starts (render() needs output_dir up front), which
+# rules out simply sourcing 0-setup.R here -- 0-setup.R's own cleanup step
+# does `rm(..., envir = .GlobalEnv)`, which would reach into and clear
+# whatever R session/console called Knit. So this re-implements just the
+# path resolution (mirroring resolve_data_root()/resolve_epi_latest_dir() in
+# 0-setup.R) in a self-contained way -- no package installs, no globals left
+# behind. If those resolvers ever change in 0-setup.R, mirror the change here
+# too. EPI_PIPELINE_DATE is still respected, so a pinned-date session renders
+# into that same date's outputs/ folder rather than jumping to latest.
+knit: |
+  (function(input, ...) {
+    repo_root <- normalizePath(file.path(dirname(input), "..", ".."), mustWork = TRUE)
+
+    resolve_data_root_min <- function(code_root) {
+      env_override <- Sys.getenv("BDBV_DATA_ROOT", unset = "")
+      if (nzchar(env_override)) {
+        return(normalizePath(env_override, mustWork = TRUE))
+      }
+      parent_dir <- normalizePath(file.path(code_root, ".."), mustWork = FALSE)
+      for (nm in c("BDBV2026-Processed_Sensitive_Data", "BDBV2026-Contact_Tracing_Analysis")) {
+        candidate <- file.path(parent_dir, nm)
+        if (dir.exists(file.path(candidate, "data"))) {
+          return(normalizePath(candidate, mustWork = TRUE))
+        }
+      }
+      stop("Could not locate the data repo next to ", code_root, call. = FALSE)
+    }
+
+    data_root <- resolve_data_root_min(repo_root)
+
+    epi_date <- Sys.getenv("EPI_PIPELINE_DATE", "")
+    if (!nzchar(epi_date)) {
+      date_dirs <- list.dirs(file.path(data_root, "data"), full.names = FALSE, recursive = FALSE)
+      date_dirs <- date_dirs[grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", date_dirs)]
+      has_ctsafe <- vapply(date_dirs, function(d) {
+        file.exists(file.path(data_root, "data", d, "dhis2_processed_linelist_ctsafe.csv"))
+      }, logical(1))
+      date_dirs <- date_dirs[has_ctsafe]
+      if (!length(date_dirs)) {
+        stop("No synced date folder with dhis2_processed_linelist_ctsafe.csv found under ", data_root, "/data.", call. = FALSE)
+      }
+      epi_date <- sort(date_dirs)[length(date_dirs)]
+    }
+
+    out_dir <- file.path(data_root, "outputs", epi_date)
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    rmarkdown::render(
+      input,
+      output_dir = out_dir,
+      output_file = "8-summary-report.pdf",
+      envir = new.env(parent = globalenv()),
+      ...
+    )
+  })
+---
+
+<!--
+Step 8: Summary report for the epi linelist pipeline.
+
+Covers steps 1-4 only (delay-distribution fitting, date imputation,
+aggregation/positivity, dashboard plots) -- the steps CI actually runs
+automatically today (run-processing-code-pipeline.yml). Steps 5-7 (residence
+mapping, residence-vs-alert reporting, nowcasting prep) are manual-only and
+not summarised here.
+
+NOT wired into any GitHub Actions workflow yet -- render manually for now:
+  rmarkdown::render("pipelines/epi_linelist_pipeline/8-summary-report.Rmd")
+or via RStudio's Knit button (both honour the custom `knit:` field above,
+which knits to PDF into this run's own outputs/<DATE>/ folder -- see that
+field's own comment for why it can't just source 0-setup.R directly).
+
+Requires a working LaTeX install for the PDF knit (0-setup.R installs
+TinyTeX automatically if missing -- a few minutes, one-time) and the `rsvg`
+package to rasterize the dashboard's SVGs for embedding (CRAN ships
+pre-built binaries for it on macOS/Windows; on Linux you'd need
+libcairo2-dev/librsvg2-dev system packages first).
+
+Every section reads its input from disk (outputs/<DATE>/...) rather than
+relying on in-memory objects from a prior step, since a knit is normally a
+fresh render, not something sourced immediately after the other steps in the
+same R session. Each section is guarded to note "not available" rather than
+error if that step's output isn't present (e.g. delay fitting was skipped, or
+lab_analysis_date was absent from the sync) -- consistent with how the
+scripts themselves degrade gracefully instead of hard-erroring.
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+# Self-contained bootstrap (mirrors resolve_code_root() in 0-setup.R, which
+# isn't sourced yet at this point) -- locates this repo
+# (BDBV2026-Processing_Code) from this .Rmd's own directory. knitr sets the
+# working directory to the document's own folder during a render by default,
+# so (unlike the plain .R steps, which parse commandArgs for --file=) this
+# can just walk up from getwd().
+resolve_code_root_from_rmd <- function() {
+  from_here <- normalizePath(file.path(getwd(), "..", ".."), mustWork = FALSE)
+  if (dir.exists(file.path(from_here, "pipelines"))) {
+    return(from_here)
+  }
+  stop(
+    "Could not locate BDBV2026-Processing_Code repo root from ", getwd(),
+    " (expected pipelines/ two levels up).", call. = FALSE
+  )
+}
+
+code_root <- resolve_code_root_from_rmd()
+setup_path <- file.path(code_root, "pipelines", "0-setup.R")
+if (!file.exists(setup_path)) {
+  stop("Setup script not found: ", setup_path, call. = FALSE)
+}
+source(setup_path, local = FALSE)
+# 0-setup.R re-resolves and overwrites code_root/data_root globally -- the
+# code_root value above was only needed to locate 0-setup.R in the first place.
+
+epi_dir <- resolve_epi_latest_dir()
+epi_outputs_dir <- file.path(data_root, "outputs", basename(epi_dir))
+
+#' Read a CSV if it exists and has rows, else return NULL. Centralises the
+#' "not available" handling every section below needs (skipped step, empty
+#' placeholder, or a schema this report doesn't recognise).
+read_if_present <- function(path) {
+  if (!file.exists(path)) {
+    return(NULL)
+  }
+  df <- tryCatch(
+    read.csv(path, stringsAsFactors = FALSE, check.names = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(df) || !nrow(df)) {
+    return(NULL)
+  }
+  df
+}
+
+not_available <- function(what) {
+  cat("*", what, "not available for this run.*\n\n")
+}
+
+#' Same slugging convention as 4-make-dashboard-plots.R's own slugify() --
+#' duplicated here (not sourced from there) since this report reads that
+#' step's already-written SVGs by filename rather than re-running its code.
+#' Keep in sync if that function ever changes.
+slugify <- function(name) {
+  parts <- strsplit(tolower(trimws(as.character(name))), "[^a-z0-9]+")[[1]]
+  parts <- parts[nzchar(parts)]
+  if (!length(parts)) {
+    return("unknown")
+  }
+  paste(parts, collapse = "-")
+}
+
+# PDF/LaTeX embedding needs a raster (or PDF) image, not SVG directly --
+# dashboard SVGs are rasterized to PNG on the fly into a session tempdir via
+# rsvg, then embedded with knitr::include_graphics(). width_px is a fixed
+# pixel width (rsvg scales height to preserve aspect ratio); tuned for the
+# report's page width rather than the SVGs' own native size.
+plot_asset_dir <- file.path(tempdir(), "8-summary-report-assets")
+dir.create(plot_asset_dir, recursive = TRUE, showWarnings = FALSE)
+
+svg_to_png <- function(svg_path, width_px = 1600) {
+  if (!file.exists(svg_path)) {
+    return(NULL)
+  }
+  png_path <- file.path(plot_asset_dir, sub("\\.svg$", ".png", basename(svg_path)))
+  ok <- tryCatch({
+    rsvg::rsvg_png(svg_path, png_path, width = width_px)
+    TRUE
+  }, error = function(e) {
+    message("  Could not rasterize ", svg_path, ": ", conditionMessage(e))
+    FALSE
+  })
+  if (!ok || !file.exists(png_path)) {
+    return(NULL)
+  }
+  png_path
+}
+
+#' Emit a markdown image tag for an already-rasterized PNG, as raw pandoc
+#' markdown (works for both html_document and pdf_document, since pandoc
+#' converts it to \includegraphics{} for the LaTeX/PDF path). Deliberately
+#' NOT knitr::include_graphics() + print()/knit_print(): that combination
+#' only auto-embeds correctly when its return value is the chunk's own
+#' top-level auto-printed expression, not when called from inside a helper
+#' function in a loop (as every call site here is) -- otherwise it just
+#' prints the knit_asis object's raw structure as literal text. Always uses
+#' an *absolute* path, since the intermediate .tex/.md pandoc actually
+#' compiles from is this run's outputs/<DATE>/ folder (per the custom `knit:`
+#' field above), not this .Rmd's own source directory that
+#' include_graphics() would otherwise compute a "nicer" relative path
+#' against.
+include_png <- function(png_path) {
+  if (is.null(png_path) || !file.exists(png_path)) {
+    return(invisible(NULL))
+  }
+  cat("\n\n![](", normalizePath(png_path), ")\n\n", sep = "")
+  invisible(NULL)
+}
+
+#' Embed a dashboard SVG as a figure (rasterizing it first), or print a
+#' one-line "not available" note in its place if the file is missing/
+#' unconvertible -- so one absent plot (e.g. a health zone that had no
+#' positivity data) doesn't stop the rest of the report from rendering.
+include_svg <- function(svg_path, caption = NULL) {
+  png_path <- svg_to_png(svg_path)
+  if (is.null(png_path)) {
+    not_available(paste0("Plot (", basename(svg_path), ")"))
+    return(invisible(NULL))
+  }
+  include_png(png_path)
+  if (!is.null(caption)) {
+    cat("\n\n*", caption, "*\n\n")
+  }
+  invisible(NULL)
+}
+```
+
+## Overview
+
+Dataset date: **`r basename(epi_dir)`**
+
+This report summarises what steps 1-4 of the epi linelist pipeline (delay-distribution fitting, date imputation, aggregation/positivity, dashboard plots) produced for this run. It reads only from files already written under `outputs/`, so it can be rendered at any time after those steps have run -- it doesn't redo any of their work.
+
+## Step 1 — Delay Distributions
+
+```{r step1-load}
+delay_fit_summary <- read_if_present(
+  file.path(epi_outputs_dir, "delay_distributions", "delay_distribution_fit_summary.csv")
+)
+```
+
+```{r step1-table, results='asis'}
+if (is.null(delay_fit_summary)) {
+  not_available("Delay distribution fit summary")
+} else {
+  best_only <- delay_fit_summary[delay_fit_summary$is_best %in% TRUE, , drop = FALSE]
+  display_cols <- c(
+    "delay", "family", "n_eligible", "mean_days", "median_days", "sd_days",
+    "q2.5_days", "q97.5_days", "max_rhat", "n_divergent"
+  )
+  display_cols <- intersect(display_cols, names(best_only))
+  cat("Best-fitting delay distribution family per onset-anchored delay (by LOO):\n\n")
+  print(knitr::kable(best_only[, display_cols, drop = FALSE], row.names = FALSE))
+  cat(
+    "\n\n", nrow(delay_fit_summary), " total family fits attempted across ",
+    length(unique(delay_fit_summary$delay)), " delay(s).\n"
+  )
+}
+```
+
+### Posterior predictive checks (best-fit family per delay)
+
+```{r step1-ppcheck, results='asis'}
+if (is.null(delay_fit_summary)) {
+  not_available("Delay distribution posterior predictive checks")
+} else {
+  best_only <- delay_fit_summary[delay_fit_summary$is_best %in% TRUE, , drop = FALSE]
+  if (!nrow(best_only)) {
+    not_available("Delay distribution posterior predictive checks")
+  } else {
+    for (i in seq_len(nrow(best_only))) {
+      delay_name <- best_only$delay[i]
+      family_name <- best_only$family[i]
+      pp_check_png <- file.path(
+        epi_outputs_dir, "delay_distributions", delay_name,
+        paste0(family_name, "_pp_check.png")
+      )
+      cat("**", delay_name, "** (", family_name, ")\n\n")
+      if (file.exists(pp_check_png)) {
+        include_png(pp_check_png)
+      } else {
+        not_available(paste0("pp_check plot for ", delay_name))
+      }
+    }
+  }
+}
+```
+
+## Step 2 — Date Imputation
+
+```{r step2-load}
+imputed_onset_csv <- file.path(epi_outputs_dir, "dhis2_linelist_with_imputed_onset.csv")
+linelist_imputed <- read_if_present(imputed_onset_csv)
+```
+
+```{r step2-table, results='asis'}
+if (is.null(linelist_imputed) || !"onset_imputation_status" %in% names(linelist_imputed)) {
+  not_available("Date imputation results")
+} else {
+  status_counts <- as.data.frame(table(linelist_imputed$onset_imputation_status, useNA = "ifany"))
+  names(status_counts) <- c("onset_imputation_status", "n_rows")
+  status_counts <- status_counts[order(-status_counts$n_rows), , drop = FALSE]
+  cat("Onset date imputation status, ", nrow(linelist_imputed), " total rows:\n\n")
+  print(knitr::kable(status_counts, row.names = FALSE))
+}
+```
+
+## Step 3 — Aggregation & Positivity
+
+```{r step3-load}
+status_aggregated <- read_if_present(file.path(epi_outputs_dir, "status_aggregated.csv"))
+rolling_positivity <- read_if_present(file.path(epi_outputs_dir, "rolling_positivity.csv"))
+lab_positivity <- read_if_present(file.path(epi_outputs_dir, "lab_positivity_aggregated.csv"))
+```
+
+### Case status totals (national)
+
+```{r step3-status, results='asis'}
+if (is.null(status_aggregated)) {
+  not_available("Status aggregation")
+} else {
+  classification_cols <- intersect(
+    c("blank", "confirmed_case", "not_a_case", "probable_case", "suspected_case"),
+    names(status_aggregated)
+  )
+  national_rows <- status_aggregated[status_aggregated$spatial_scale == "national", , drop = FALSE]
+  if (!nrow(national_rows) || !length(classification_cols)) {
+    not_available("National status totals")
+  } else {
+    totals <- colSums(national_rows[, classification_cols, drop = FALSE], na.rm = TRUE)
+    totals_df <- data.frame(classification = names(totals), total = as.integer(totals))
+    n_provinces <- length(unique(status_aggregated$province[status_aggregated$spatial_scale == "province"]))
+    n_health_zones <- length(unique(status_aggregated$health_zone[status_aggregated$spatial_scale == "healthzone"]))
+    print(knitr::kable(totals_df, row.names = FALSE))
+    cat(
+      "\n\n", n_provinces, " province(s) and ", n_health_zones,
+      " health zone(s) represented across the full date range.\n"
+    )
+  }
+}
+```
+
+### Rolling test positivity (national, most recent day)
+
+```{r step3-positivity, results='asis'}
+if (is.null(rolling_positivity)) {
+  not_available("Rolling positivity (no lab_analysis_date in this sync, or no data yet)")
+} else {
+  national_pos <- rolling_positivity[rolling_positivity$spatial_scale == "national", , drop = FALSE]
+  if (!nrow(national_pos)) {
+    not_available("National rolling positivity")
+  } else {
+    national_pos$date_of_symptom_onset_imputed <- as.Date(national_pos$date_of_symptom_onset_imputed)
+    latest <- national_pos[which.max(national_pos$date_of_symptom_onset_imputed), , drop = FALSE]
+    cat(
+      "Most recent 5-day rolling positivity (national), as of ",
+      format(latest$date_of_symptom_onset_imputed), ": **",
+      sprintf("%.1f%%", latest$daily_positivity_mean * 100), "** (",
+      sprintf("%.1f%%", latest$daily_positivity_lower * 100), "-",
+      sprintf("%.1f%%", latest$daily_positivity_upper * 100),
+      " 95% CI), from ", latest$rolling_confirmed, "/", latest$rolling_total,
+      " samples.\n"
+    )
+  }
+}
+```
+
+### Lab positivity summary
+
+```{r step3-lab, results='asis'}
+if (is.null(lab_positivity)) {
+  not_available("Lab positivity table")
+} else {
+  lab_positivity$lab_analysis_date <- as.Date(lab_positivity$lab_analysis_date)
+  latest_per_lab <- do.call(rbind, lapply(split(lab_positivity, lab_positivity$lab_name), function(d) {
+    d[which.max(d$lab_analysis_date), , drop = FALSE]
+  }))
+  label_col <- if ("lab_name_long" %in% names(latest_per_lab)) "lab_name_long" else "lab_name"
+  display <- data.frame(
+    lab = latest_per_lab[[label_col]],
+    as_of = format(latest_per_lab$lab_analysis_date),
+    rolling_positivity = sprintf("%.1f%%", latest_per_lab$daily_positivity_mean * 100),
+    rolling_samples = latest_per_lab$rolling_total
+  )
+  display <- display[order(display$lab), , drop = FALSE]
+  cat(nrow(latest_per_lab), " lab(s) reporting. Most recent 5-day rolling positivity per lab:\n\n")
+  print(knitr::kable(display, row.names = FALSE))
+}
+```
+
+## Step 4 — Dashboard Plots
+
+```{r step4-load}
+manifest_path <- file.path(data_root, "outputs", "manifest.json")
+manifest <- if (file.exists(manifest_path)) {
+  tryCatch(jsonlite::fromJSON(manifest_path, simplifyVector = FALSE), error = function(e) NULL)
+} else {
+  NULL
+}
+lab_plot_dir <- file.path(epi_outputs_dir, "dashboard_plots", "lab")
+n_lab_plots <- if (dir.exists(lab_plot_dir)) length(list.files(lab_plot_dir, pattern = "\\.svg$")) else 0L
+```
+
+```{r step4-summary, results='asis'}
+if (is.null(manifest)) {
+  not_available("Dashboard plot manifest (outputs/manifest.json)")
+} else {
+  provinces_with_plots <- names(manifest$plots)
+  cat(
+    "`outputs/manifest.json` currently points at **", manifest$date, "** ",
+    "(this run: ", basename(epi_dir), ").\n\n"
+  )
+  cat(length(provinces_with_plots), " province plot(s) generated (at least one confirmed case each): ",
+      paste(provinces_with_plots, collapse = ", "), ".\n\n")
+  if (!is.null(status_aggregated)) {
+    all_provinces <- unique(status_aggregated$province[status_aggregated$spatial_scale == "province"])
+    all_provinces <- all_provinces[!is.na(all_provinces)]
+    skipped <- setdiff(all_provinces, provinces_with_plots)
+    if (length(skipped)) {
+      cat(
+        "Skipped (no confirmed cases yet): ", paste(skipped, collapse = ", "), ".\n\n"
+      )
+    }
+  }
+  cat(n_lab_plots, " lab plot(s) generated.\n\n")
+  if (!is.null(manifest$incomplete_styling)) {
+    cat(
+      "Dates within the last ", manifest$incomplete_styling$days,
+      " day(s) are shaded on the plots as \"", manifest$incomplete_styling$label, "\".\n"
+    )
+  }
+}
+```
+
+### National daily onset & positivity
+
+```{r plot-national, results='asis'}
+national_svg <- file.path(epi_outputs_dir, "dashboard_plots", "national", "daily_onset_national.svg")
+include_svg(national_svg)
+```
+
+### Province-level daily onset & positivity
+
+```{r plot-province, results='asis'}
+if (is.null(manifest) || !length(manifest$plots)) {
+  not_available("Province-level plots")
+} else {
+  for (province in names(manifest$plots)) {
+    svg_path <- file.path(data_root, "outputs", manifest$plots[[province]]$file)
+    cat("**", province, "**\n\n")
+    include_svg(svg_path)
+  }
+}
+```
+
+### Top 5 health zones by confirmed cases
+
+```{r plot-top-cases, results='asis'}
+if (is.null(status_aggregated)) {
+  not_available("Top health zones by confirmed cases")
+} else {
+  hz_rows <- status_aggregated[status_aggregated$spatial_scale == "healthzone", , drop = FALSE]
+  if (!nrow(hz_rows) || !"confirmed_case" %in% names(hz_rows)) {
+    not_available("Top health zones by confirmed cases")
+  } else {
+    totals <- stats::aggregate(confirmed_case ~ health_zone, data = hz_rows, FUN = sum)
+    totals <- totals[order(-totals$confirmed_case), , drop = FALSE]
+    top5 <- utils::head(totals, 5)
+    for (i in seq_len(nrow(top5))) {
+      zone <- top5$health_zone[i]
+      cat("**", zone, "** — ", top5$confirmed_case[i], " confirmed case(s) total\n\n")
+      svg_path <- file.path(
+        epi_outputs_dir, "dashboard_plots", "healthzone",
+        paste0("daily_onset_", slugify(zone), ".svg")
+      )
+      include_svg(svg_path)
+    }
+  }
+}
+```
+
+### Top 5 health zones by mean rolling positivity (last 7 days)
+
+```{r plot-top-positivity, results='asis'}
+if (is.null(rolling_positivity)) {
+  not_available("Top health zones by rolling positivity")
+} else {
+  hz_pos <- rolling_positivity[rolling_positivity$spatial_scale == "healthzone", , drop = FALSE]
+  if (!nrow(hz_pos)) {
+    not_available("Top health zones by rolling positivity")
+  } else {
+    hz_pos$date_of_symptom_onset_imputed <- as.Date(hz_pos$date_of_symptom_onset_imputed)
+    window_start <- max(hz_pos$date_of_symptom_onset_imputed, na.rm = TRUE) - 6L
+    recent <- hz_pos[hz_pos$date_of_symptom_onset_imputed >= window_start, , drop = FALSE]
+    if (!nrow(recent)) {
+      not_available("Top health zones by rolling positivity")
+    } else {
+      means <- stats::aggregate(daily_positivity_mean ~ health_zone, data = recent, FUN = mean)
+      means <- means[order(-means$daily_positivity_mean), , drop = FALSE]
+      top5 <- utils::head(means, 5)
+      cat(
+        "Mean of the 5-day rolling positivity estimate over ",
+        format(window_start), " to ",
+        format(max(hz_pos$date_of_symptom_onset_imputed, na.rm = TRUE)), ":\n\n"
+      )
+      for (i in seq_len(nrow(top5))) {
+        zone <- top5$health_zone[i]
+        cat("**", zone, "** — mean rolling positivity ",
+            sprintf("%.1f%%", top5$daily_positivity_mean[i] * 100), "\n\n")
+        svg_path <- file.path(
+          epi_outputs_dir, "dashboard_plots", "healthzone",
+          paste0("daily_onset_", slugify(zone), ".svg")
+        )
+        include_svg(svg_path)
+      }
+    }
+  }
+}
+```
+
+### Lab plots
+
+```{r plot-labs, results='asis'}
+lab_svgs <- if (dir.exists(lab_plot_dir)) list.files(lab_plot_dir, pattern = "\\.svg$", full.names = TRUE) else character(0)
+if (!length(lab_svgs)) {
+  not_available("Lab plots")
+} else {
+  # Match each file's slug back to a lab_name (and its nicer lab_name_long,
+  # when available) via lab_positivity_aggregated.csv, the same way
+  # 4-make-dashboard-plots.R names these files in the first place
+  # (lab_<slugify(lab_name)>.svg).
+  lab_names <- character(0)
+  lab_labels <- character(0)
+  if (!is.null(lab_positivity)) {
+    lab_names <- unique(lab_positivity$lab_name)
+    lab_labels <- vapply(lab_names, function(nm) {
+      long <- if ("lab_name_long" %in% names(lab_positivity)) {
+        unique(lab_positivity$lab_name_long[lab_positivity$lab_name == nm])
+      } else {
+        character(0)
+      }
+      long <- long[!is.na(long) & nzchar(long)]
+      if (length(long)) long[1] else nm
+    }, character(1))
+  }
+  # slugify() (like 4-make-dashboard-plots.R's own copy) only handles one
+  # name at a time -- apply it element-wise rather than passing the whole
+  # vector in, which would silently only use the first name's tokens.
+  slug_lookup <- stats::setNames(lab_labels, vapply(lab_names, slugify, character(1)))
+
+  for (svg_path in sort(lab_svgs)) {
+    slug <- sub("^lab_", "", sub("\\.svg$", "", basename(svg_path)))
+    label <- if (slug %in% names(slug_lookup)) slug_lookup[[slug]] else slug
+    cat("**", label, "**\n\n")
+    include_svg(svg_path)
+  }
+}
+```

@@ -1,20 +1,17 @@
 #!/usr/bin/env Rscript
 # Step 3: Aggregation for the epi linelist pipeline.
 #   - Reads dhis2_linelist_with_imputed_onset.csv (2-date_imputation.R's output)
-#   - Writes province_aggregated.csv (daily confirmed-case onset counts by
-#     province)
-#   - Writes positivity_aggregated.csv (5-day rolling test positivity by
-#     province) when lab_analysis_date is present in this sync, else an
-#     empty placeholder
-#   - Writes status_aggregated.csv (daily sample-status counts) and
-#     healthzones_with_positives.csv (earliest-onset confirmed case counts
-#     by health zone)
-#   - Also builds a per-lab test-positivity table and writes
-#     lab_positivity_aggregated.csv (same Wilson-CI + 5-day-rolling positivity
-#     as above, but by lab and on lab_analysis_date rather than onset date),
-#   - sandbox_mode (off by default) additionally computes an exploratory
-#     delay-distribution HDI plot, kept here for ad hoc use rather than run
-#     automatically
+#   - Writes status_aggregated.csv: daily case-status counts (blank/
+#     confirmed_case/not_a_case/probable_case/suspected_case), at national,
+#     province, and health-zone spatial scales (one long table, a
+#     "spatial_scale" column plus NA placeholders distinguish the scales)
+#   - Writes rolling_positivity.csv: 5-day rolling test positivity (Wilson CI),
+#     at the same three spatial scales, when lab_analysis_date is present in
+#     this sync -- else an empty placeholder
+#   - Writes lab_positivity_aggregated.csv: the same Wilson-CI + 5-day-rolling
+#     positivity, but by lab and on lab_analysis_date rather than onset date
+#   - sandbox_mode (off by default) is a placeholder for exploratory ad hoc
+#     work, not run automatically -- currently empty
 
 # ------------------------- Check if initialised -------------------------------
 # Adapted for BDBV2026-Contact_Tracing_Analysis: there is no local
@@ -359,7 +356,16 @@ if (sandbox_mode) {
 # --------------------------------- Cleanup ------------------------------------
 dhis2_linelist_aggregated = T
 
-keep_objects <- c(keep_objects, "dhis2_linelist_aggregated", "dhis2_linelist_province_aggregated")
+# dhis2_linelist_aggregated_status/dhis2_linelist_positivity_aggregated/
+# lab_positivity_5day are the objects 4-make-dashboard-plots.R actually looks
+# for via exists(..., inherits = TRUE) when steps are sourced together in one
+# session -- keep them so that fast path works (it's otherwise silently dead:
+# rm() below would wipe them before step 4 gets a chance to look).
+keep_objects <- c(
+  keep_objects, "dhis2_linelist_aggregated",
+  "dhis2_linelist_aggregated_status", "dhis2_linelist_positivity_aggregated",
+  "lab_positivity_5day"
+)
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)
 

@@ -11,7 +11,8 @@
         "4_dashboard_plots": "pipelines/epi_linelist_pipeline/4-make-dashboard-plots.R",
         "5_map_residence_health_areas": "pipelines/epi_linelist_pipeline/5-map-residence-health-areas.R",
         "6_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/6-residence-vs-alert-report.R",
-        "7_nowcasting_prep": "pipelines/epi_linelist_pipeline/7-nowcasting_prep.R"
+        "7_nowcasting_prep": "pipelines/epi_linelist_pipeline/7-nowcasting_prep.R",
+        "8_summary_report": "pipelines/epi_linelist_pipeline/8-summary-report.Rmd"
       }
     },
     "data": {
@@ -20,7 +21,6 @@
         "processed_linelist": "dhis2_processed_linelist_ctsafe.csv",
         "linelist_with_delays": "dhis2_linelist_with_delays.csv",
         "linelist_with_imputed_onset": "dhis2_linelist_with_imputed_onset.csv",
-        "province_aggregated": "province_aggregated.csv",
         "nowcasting_prep": "dhis2_nowcasting_prep.csv",
         "nowcasting_daily_counts": "dhis2_nowcasting_daily_counts.csv",
         "nowcasting_daily_counts_by_province": "dhis2_nowcasting_daily_counts_by_province.csv",

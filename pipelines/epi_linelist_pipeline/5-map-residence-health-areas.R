@@ -454,7 +454,7 @@ linelist_meta <- parse_dhis2_linelist_date(epi_dir)
 input_csv <- file.path(epi_dir, "dhis2_processed_linelist_ctsafe.csv")
 shp_path <- file.path(
   data_root,
-  "data", "geo", "rdc_aires-de-sante",
+  "assets", "geo", "rdc_aires-de-sante",
   "RDC_Aires de santÇ.shp"
 )
 output_dir <- file.path(

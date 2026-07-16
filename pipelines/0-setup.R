@@ -24,7 +24,10 @@ req_pkgs <- c(
   "readr", "dplyr", "tidyr", "purrr", "stringr",
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
-  "brms", "bayesplot", "loo", "svglite"
+  "brms", "bayesplot", "loo", "svglite",
+  "rmarkdown", # 8-summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
+  "rsvg",     # rasterizing dashboard SVGs for PDF embedding in 8-summary-report.Rmd
+  "tinytex"   # LaTeX engine rmarkdown needs to knit 8-summary-report.Rmd to PDF
 )
 
 for (p in req_pkgs) {
@@ -161,6 +164,24 @@ if (requireNamespace("cmdstanr", quietly = TRUE)) {
     dir.create(CMDSTAN_INSTALL_DIR, recursive = TRUE, showWarnings = FALSE)
     cmdstanr::install_cmdstan(dir = CMDSTAN_INSTALL_DIR)
   }
+}
+
+# tinytex (the R package) just wraps a LaTeX distribution -- it still needs
+# that distribution actually installed once before rmarkdown can knit
+# 8-summary-report.Rmd to PDF. Same one-time-heavy-install shape as CmdStan
+# above, just much lighter (a couple of minutes, not 10-20).
+if (requireNamespace("tinytex", quietly = TRUE) && !tinytex::is_tinytex()) {
+  message("TinyTeX not found -- installing (needed to knit 8-summary-report.Rmd to PDF)...")
+  tryCatch(
+    tinytex::install_tinytex(),
+    error = function(e) {
+      warning(
+        "tinytex::install_tinytex() failed: ", conditionMessage(e),
+        " -- 8-summary-report.Rmd's PDF knit will fail until this is resolved manually.",
+        call. = FALSE
+      )
+    }
+  )
 }
 
 suppressWarnings(suppressPackageStartupMessages({

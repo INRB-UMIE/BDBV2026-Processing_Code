@@ -54,7 +54,12 @@ cfg_path <- function(key) {
 
 
 #--------------------- Set input and output paths ------------------------------
-input_csv <- cfg_path("linelist_with_delays")
+# linelist_with_delays.csv is written by 1-fit_delay_distributions.R into
+# outputs/<DATE>/delay_distributions/ (alongside the per-delay fit
+# subfolders), not directly under outputs/<DATE>/ -- cfg_path() alone would
+# point one level too shallow, so it's joined onto delay_distributions/ here
+# to match where step 1 (and 2-date_imputation.R) actually read/write it.
+input_csv <- file.path(outputs_dir, "delay_distributions", cfg$data$files$linelist_with_delays)
 output_csv <- cfg_path("nowcasting_prep")
 qc_log_csv <- cfg_path("nowcasting_qc_log")
 qc_codes_csv <- cfg_path("nowcasting_qc_codes")

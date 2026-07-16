@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Step 4: Dashboard plots for the epi linelist pipeline.
 #   - Reads status_aggregated.csv (confirmed-case counts) and
-#     positivity_aggregated.csv (5-day rolling test positivity), both from
+#     rolling_positivity.csv (5-day rolling test positivity), both from
 #     outputs/<DATE>/, at all three spatial scales 3-aggregate-linelist.R
 #     produces (national/province/healthzone), and renders one ggplot2 chart
 #     per entry, saved as SVG via svglite
@@ -287,7 +287,7 @@ complete_date_series <- function(rows, series_ids) {
   rows
 }
 
-# positivity_aggregated.csv is long across spatial_scale (national/province/
+# rolling_positivity.csv is long across spatial_scale (national/province/
 # healthzone, see 3-aggregate-linelist.R) -- load every scale here; scale (and
 # province/health_zone, where relevant) is filtered per-entry in
 # scale_positivity_rows() below.
