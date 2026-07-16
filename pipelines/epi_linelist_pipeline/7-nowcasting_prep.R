@@ -41,8 +41,15 @@ pipeline_configs <- jsonlite::fromJSON(config_path, simplifyVector = TRUE)
 cfg <- pipeline_configs$epi_linelist
 cfg$version <- pipeline_configs$version
 processed_dir <- resolve_epi_latest_dir()
+# outputs/<DATE>/ is the default destination for everything this pipeline
+# produces -- only the upstream-synced ctsafe linelist stays under
+# data/<DATE>/ (processed_dir is kept only to derive the date stamp here).
+# Both the linelist_with_delays input (from step 1) and every file this step
+# writes now live under the same outputs/<DATE>/ directory.
+outputs_dir <- file.path(data_root, "outputs", basename(processed_dir))
+dir.create(outputs_dir, recursive = TRUE, showWarnings = FALSE)
 cfg_path <- function(key) {
-  file.path(processed_dir, cfg$data$files[[key]])
+  file.path(outputs_dir, cfg$data$files[[key]])
 }
 
 
@@ -502,7 +509,7 @@ if (exists("processed_dhis2_linelist_with_delays", inherits = TRUE)) {
   df <- read.csv(input_csv, stringsAsFactors = FALSE, check.names = FALSE)
 } else {
   stop("Linelist with delays not found: ", input_csv,
-       ". Run 1-delays_and_imputation.R first.", call. = FALSE)
+       ". Run 1-fit_delay_distributions.R first.", call. = FALSE)
 }
 
 n <- nrow(df)
@@ -684,7 +691,7 @@ message(
 )
 
 # ── Delay intervals (days) ────────────────────────────────────────────────────
-# Computed upstream in 1-delays_and_imputation.R now -- df already has these
+# Computed upstream in 1-fit_delay_distributions.R now -- df already has these
 # columns (read from dhis2_linelist_with_delays.csv). Keep the name list here
 # only for the column-ordering step further down.
 delay_cols <- c(
@@ -860,7 +867,7 @@ col_order <- col_order[!duplicated(col_order)]
 df <- df[, intersect(col_order, names(df)), drop = FALSE]
 
 # ── Write outputs ─────────────────────────────────────────────────────────────
-dir.create(processed_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(outputs_dir, recursive = TRUE, showWarnings = FALSE)
 write.table(
   df,
   output_csv,
