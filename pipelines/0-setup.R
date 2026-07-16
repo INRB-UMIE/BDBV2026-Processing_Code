@@ -2,9 +2,10 @@
 #
 # Adapted from BDBV2026-Contact_Tracing_Analysis's pipelines/0-setup.R for this
 # repo's code/data split. This repo (BDBV2026-Processing_Code) holds only the
-# scripts for steps 2-6 of the epi linelist pipeline (aggregation, nowcasting,
-# dashboard plots, residence mapping, residence-vs-alert reporting). It has no
-# data/ directory of its own — all input/output data lives in the sibling
+# scripts for steps 1-7 of the epi linelist pipeline (delay-distribution
+# fitting, date imputation, aggregation, dashboard plots, residence mapping,
+# residence-vs-alert reporting, nowcasting prep). It has no data/ directory
+# of its own — all input/output data lives in the sibling
 # BDBV2026-Processed_Sensitive_Data repo (data/ + outputs/), located via
 # resolve_data_root() below.
 #
@@ -23,7 +24,7 @@ req_pkgs <- c(
   "readr", "dplyr", "tidyr", "purrr", "stringr",
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
-  "brms", "bayesplot", "loo"
+  "brms", "bayesplot", "loo", "svglite"
 )
 
 for (p in req_pkgs) {
@@ -32,7 +33,7 @@ for (p in req_pkgs) {
   }
 }
 
-# epidist (delay-distribution fitting, used by 1-delays_and_imputation.R)
+# epidist (delay-distribution fitting, used by 1-fit_delay_distributions.R)
 # isn't on CRAN -- it's published on the epinowcast R-universe. cmdstanr (the
 # Stan backend epidist fits with) is on the Stan R-universe. Install these
 # from their own repos, falling back to CRAN for their regular dependencies.
@@ -57,13 +58,59 @@ for (p in names(special_repo_pkgs)) {
 # See: https://primarycensored.epinowcast.org/news/index.html
 # If a newer epidist release adds support for the new signature, this pin
 # should be revisited/removed.
+#
+# Checking the version alone isn't enough to catch a *corrupted* install:
+# R's lazy-load database is read function-by-function on first use, so a
+# package can report the right version and load fine while one specific
+# function's serialized bytecode is truncated/corrupt on disk. That's exactly
+# what happened here -- fitting worked, but loo() (which needs a different
+# function out of the same package) errored with "lazy-load database ... is
+# corrupt". check_primarycensored_ok() also force-touches every exported name
+# to catch that before anything downstream does.
 PRIMARYCENSORED_PINNED_VERSION <- "1.3.0"
-primarycensored_ok <- requireNamespace("primarycensored", quietly = TRUE) &&
-  as.character(utils::packageVersion("primarycensored")) == PRIMARYCENSORED_PINNED_VERSION
-if (!primarycensored_ok) {
+
+# A corrupted lazy-load database doesn't always throw a hard error -- R's
+# decompression step (R_decompress1) can instead emit a *warning* ("internal
+# error N in R_decompress1 with libdeflate", often paired with "restarting
+# interrupted promise evaluation") and otherwise continue. An error-only
+# handler would silently miss that and report "ok", so any warning raised
+# while touching the package's exports is treated the same as an error here.
+check_primarycensored_ok <- function() {
+  tryCatch({
+    if (!requireNamespace("primarycensored", quietly = TRUE)) {
+      return(FALSE)
+    }
+    if (as.character(utils::packageVersion("primarycensored")) != PRIMARYCENSORED_PINNED_VERSION) {
+      return(FALSE)
+    }
+    ns <- asNamespace("primarycensored")
+    for (nm in getNamespaceExports("primarycensored")) {
+      get(nm, envir = ns)
+    }
+    TRUE
+  }, error = function(e) FALSE, warning = function(w) FALSE)
+}
+
+if (!check_primarycensored_ok()) {
   if (!requireNamespace("remotes", quietly = TRUE)) {
     install.packages("remotes", repos = "https://cloud.r-project.org")
   }
+
+  # Make sure nothing has it loaded before removing/overwriting its files.
+  if ("primarycensored" %in% loadedNamespaces()) {
+    try(unloadNamespace("primarycensored"), silent = TRUE)
+  }
+  if ("primarycensored" %in% rownames(installed.packages())) {
+    try(remove.packages("primarycensored"), silent = TRUE)
+  }
+  # Belt-and-braces: remove.packages() can leave files behind on a corrupted
+  # install (the exact scenario this is guarding against) -- explicitly
+  # delete whatever's left on disk before reinstalling.
+  leftover_dir <- tryCatch(find.package("primarycensored", quiet = TRUE), error = function(e) character(0))
+  if (length(leftover_dir) && dir.exists(leftover_dir)) {
+    unlink(leftover_dir, recursive = TRUE, force = TRUE)
+  }
+
   message(
     "Installing primarycensored ", PRIMARYCENSORED_PINNED_VERSION,
     " (pinned -- see comment above this block for why)..."
@@ -73,6 +120,17 @@ if (!primarycensored_ok) {
     version = PRIMARYCENSORED_PINNED_VERSION,
     repos = "https://cloud.r-project.org"
   )
+
+  if (!check_primarycensored_ok()) {
+    warning(
+      "primarycensored ", PRIMARYCENSORED_PINNED_VERSION, " was reinstalled but still fails ",
+      "the integrity check -- delay distribution fitting (1-fit_delay_distributions.R) may not ",
+      "work. Try installing from source explicitly: ",
+      "remotes::install_version(\"primarycensored\", version = \"", PRIMARYCENSORED_PINNED_VERSION,
+      "\", repos = \"https://cloud.r-project.org\", type = \"source\")",
+      call. = FALSE
+    )
+  }
 }
 
 # CmdStan itself (the actual Stan toolchain cmdstanr calls out to) is a heavy,
@@ -128,6 +186,25 @@ suppressWarnings(suppressPackageStartupMessages({
   library(primarycensored)
   library(cmdstanr)
 }))
+
+# -----------------------------
+# Available cores
+# -----------------------------
+# Used to size chains/cores for Stan fits and loo() calls (see
+# 1-fit_delay_distributions.R) so they adapt to wherever this actually runs,
+# rather than a hardcoded number that oversubscribes small environments.
+# Standard GitHub Actions runners report 2 here; a local machine will report
+# however many (logical) cores it actually has. Overridable via
+# N_CORES_OVERRIDE for testing/tuning without editing this file.
+N_CORES_AVAILABLE <- tryCatch({
+  override <- Sys.getenv("N_CORES_OVERRIDE", "")
+  if (nzchar(override)) {
+    max(1L, as.integer(override))
+  } else {
+    n <- parallel::detectCores(logical = TRUE)
+    if (is.na(n) || n < 1) 1L else as.integer(n)
+  }
+}, error = function(e) 1L)
 
 
 # -----------------------------
@@ -253,6 +330,28 @@ resolve_epi_latest_dir <- function(processed_dir = file.path(data_root, "data"))
   file.path(data_dir, latest)
 }
 
+# Pins the whole pipeline to a specific synced date folder instead of always
+# using the latest one -- e.g. to keep working against yesterday's sync while
+# a newer one is still being checked, or to reproduce a past run. Set
+# EPI_PIPELINE_DATE (YYYY-MM-DD) before running any step; every step sources
+# this file first, so the override applies uniformly across all of them, even
+# though each step runs as its own Rscript process. resolve_epi_latest_dir()
+# already had an `epi_latest_dir` global-override hook (for interactive use,
+# e.g. sourcing steps together in one session) -- this just wires that up to
+# an env var so it survives across process boundaries too.
+epi_pipeline_date_override <- Sys.getenv("EPI_PIPELINE_DATE", "")
+if (nzchar(epi_pipeline_date_override)) {
+  epi_latest_dir <- file.path(data_root, "data", epi_pipeline_date_override)
+  if (!file.exists(file.path(epi_latest_dir, "dhis2_processed_linelist_ctsafe.csv"))) {
+    stop(
+      "EPI_PIPELINE_DATE is set to '", epi_pipeline_date_override,
+      "' but ", epi_latest_dir, " has no dhis2_processed_linelist_ctsafe.csv.",
+      call. = FALSE
+    )
+  }
+  message("EPI_PIPELINE_DATE override active -- using ", epi_latest_dir, " instead of the latest synced folder.")
+}
+
 #' Build a linelist_meta-shaped list (date, coded, label, basename) from a
 #' resolved `data/YYYY-MM-DD` folder, for scripts (e.g. step 6) that need a
 #' human-readable run label but have no raw workbook to parse a date from
@@ -306,6 +405,136 @@ parse_linelist_date <- function(x) {
   out
 }
 
+#' Look up a posterior_summary() row by a list of candidate regex patterns
+#' (tried in order), returning its "Estimate" column. Used for pulling a
+#' brms/epidist fit's coefficients by name without hardcoding a single naming
+#' convention, since the exact row name for a given parameter can vary by
+#' brms/epidist version (e.g. "b_Intercept" vs "b_mu_Intercept"). Returns
+#' NA_real_ (rather than erroring) if none of the patterns match, so callers
+#' can decide how to handle a missing parameter.
+get_param_estimate <- function(posterior_summary_mat, patterns) {
+  nm <- rownames(posterior_summary_mat)
+  for (p in patterns) {
+    hit <- grep(p, nm, value = TRUE)
+    if (length(hit)) {
+      return(unname(posterior_summary_mat[hit[1], "Estimate"]))
+    }
+  }
+  NA_real_
+}
+
+#' dpar name epidist/brms uses for each fitted family's dispersion/shape
+#' parameter -- shared by anything that needs to look it up (delay
+#' distribution summaries in 1-fit_delay_distributions.R, sampling/quantiles
+#' in 2-date_imputation.R).
+epidist_family_dpar <- list(lognormal = "sigma", weibull = "shape", gamma = "shape")
+
+#' Extract a fitted epidist/brms delay-distribution model's mu and
+#' dispersion/shape parameters on their *natural* (response) scale.
+#'
+#' epidist gives every family's dispersion/shape dpar its own `~1` regression
+#' formula (confirmed in each fit's printed "Formula:"/"Links:" lines -- e.g.
+#' "shape ~ 1" under "shape = log", or "sigma ~ 1" under "sigma = log", for
+#' all three families, including lognormal). Because it's a full regression
+#' rather than a plain flat dpar, brms doesn't create an already-back-
+#' transformed convenience column for it -- posterior_summary() only has the
+#' raw b_<param>_Intercept value, on the *link* scale. Missing this exp() was
+#' the actual bug behind "massive" Weibull SDs early on: a raw shape_Intercept
+#' of 0.05 (log scale) was being used directly as shape=0.05 (an almost-
+#' degenerate, mode-at-zero Weibull) instead of the true shape=exp(0.05)=1.05
+#' (an unremarkable shape near 1).
+#'
+#' mu_link: lognormal's mu (meanlog) uses an identity link; weibull/gamma's
+#' mu (already the response mean, per brms's parameterization) uses a log
+#' link, so it needs exponentiating back to the natural scale too.
+#'
+#' Returns list(mu = <natural scale>, disp = <natural scale: sdlog/shape>),
+#' or NULL (with a warning) if the expected posterior variables can't be
+#' found -- callers should treat that as "can't use this fit" rather than
+#' erroring the whole run.
+epidist_extract_family_params <- function(fit, family_name) {
+  disp_param <- epidist_family_dpar[[family_name]]
+  if (is.null(disp_param)) {
+    stop("Unknown family: ", family_name, call. = FALSE)
+  }
+
+  ps <- brms::posterior_summary(fit)
+  mu_link_scale <- get_param_estimate(ps, c("^b_Intercept$", "^b_mu_Intercept$", "^Intercept$"))
+  disp_link_scale <- get_param_estimate(ps, c(paste0("^", disp_param, "$"), paste0("^b_", disp_param, "_Intercept$")))
+
+  if (is.na(mu_link_scale) || is.na(disp_link_scale)) {
+    warning(
+      "Could not locate expected posterior parameters for family ", family_name,
+      call. = FALSE
+    )
+    return(NULL)
+  }
+
+  mu <- if (family_name == "lognormal") mu_link_scale else exp(mu_link_scale)
+  disp <- exp(disp_link_scale)
+  list(mu = mu, disp = disp)
+}
+
+#' Convert a family's natural-scale mu/disp (from epidist_extract_family_params())
+#' into the parameter names R's own r<family>()/q<family>() functions expect.
+#' Weibull's scale is computed via lgamma() (log-space), not raw gamma(), for
+#' the same numerical-stability reason documented in
+#' 1-fit_delay_distributions.R: 1+1/shape can be large enough that gamma()
+#' itself loses precision or overflows when shape is small.
+epidist_family_rq_params <- function(family_name, mu, disp) {
+  if (family_name == "lognormal") {
+    return(list(meanlog = mu, sdlog = disp))
+  }
+  if (family_name == "weibull") {
+    shape <- disp
+    log_scale <- log(mu) - lgamma(1 + 1 / shape)
+    return(list(shape = shape, scale = exp(log_scale)))
+  }
+  if (family_name == "gamma") {
+    shape <- disp
+    return(list(shape = shape, rate = shape / mu))
+  }
+  stop("Unknown family: ", family_name, call. = FALSE)
+}
+
+#' Load a `key,value` lookup CSV from data_root/assets/maps/<name>.csv into a
+#' named character vector (value, named by key) -- e.g.
+#' load_map_csv("lab_name_map")[["INRBK"]]. Mirrors BDBV2026-Secure_Raw_Data's
+#' own load_map_csv() helper for consistency across the BDBV2026 repos,
+#' adapted to this repo's data_root/assets/maps/ location. encoding defaults
+#' to UTF-8 (that folder's usual convention); override for outlier files
+#' saved in a different encoding (e.g. lab_name_map.csv is Mac OS Roman).
+#'
+#' Reads raw bytes (rather than handing `fileEncoding` to read.csv directly)
+#' and strips a leading UTF-8 BOM (EF BB BF) before decoding, because
+#' read.csv's automatic BOM handling only kicks in for UTF-8-family
+#' encodings. lab_name_map.csv turned out to have a UTF-8 BOM tacked onto an
+#' otherwise Mac-Roman-encoded file (likely picked up from a re-save in some
+#' editor) -- left in place, those 3 bytes get decoded as Mac Roman too and
+#' fuse onto the front of the "key" header, so `names(df)` never actually
+#' contains "key" and the check below fails even though the file looks fine
+#' at a glance.
+load_map_csv <- function(name, maps_dir = file.path(data_root, "assets", "maps"), encoding = "UTF-8") {
+  path <- file.path(maps_dir, paste0(name, ".csv"))
+  if (!file.exists(path)) {
+    stop("Map CSV not found: ", path, call. = FALSE)
+  }
+  raw <- readBin(path, what = "raw", n = file.size(path))
+  utf8_bom <- as.raw(c(0xef, 0xbb, 0xbf))
+  if (length(raw) >= 3 && identical(raw[1:3], utf8_bom)) {
+    raw <- raw[-(1:3)]
+  }
+  text <- iconv(rawToChar(raw), from = encoding, to = "UTF-8")
+  df <- read.csv(
+    text = text, stringsAsFactors = FALSE, colClasses = "character",
+    na.strings = character(0)
+  )
+  if (!all(c("key", "value") %in% names(df))) {
+    stop("Map CSV missing key/value columns: ", path, call. = FALSE)
+  }
+  stats::setNames(df$value, df$key)
+}
+
 #' Read a synced linelist CSV the "proper" way, for use by any pipeline step:
 #'   - Normalizes blank/NA tokens ("", "NA", "N/A") consistently as NA across
 #'     every column, instead of each script handling blanks its own way
@@ -349,9 +578,12 @@ pipeline_configs <- jsonlite::fromJSON(config_path, simplifyVector = TRUE)
 keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "code_root", "data_root", "pipeline_configs",
                   "resolve_code_root", "resolve_data_root",
-                  "resolve_epi_latest_dir", "parse_dhis2_linelist_date",
+                  "resolve_epi_latest_dir", "epi_latest_dir", "parse_dhis2_linelist_date",
                   "parse_synced_date_dir", "dhis2_force_stems",
-                  "parse_linelist_date", "load_linelist_properly")
+                  "parse_linelist_date", "load_linelist_properly", "load_map_csv",
+                  "N_CORES_AVAILABLE", "get_param_estimate",
+                  "epidist_family_dpar", "epidist_extract_family_params",
+                  "epidist_family_rq_params")
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)
 
