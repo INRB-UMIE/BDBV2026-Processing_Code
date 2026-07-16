@@ -459,7 +459,7 @@ shp_path <- file.path(
 )
 output_dir <- file.path(
   data_root,
-  "outputs", "residence_vs_alert_health_area_maps"
+  "outputs", linelist_label, "residence_vs_alert_health_area_maps"
 )
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 

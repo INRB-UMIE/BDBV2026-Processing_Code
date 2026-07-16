@@ -199,8 +199,8 @@ write_residence_vs_alert_report <- function(
     data_root,
     linelist_meta,
     province_results,
-    maps_dir = file.path(data_root, "outputs", "residence_vs_alert_health_area_maps")) {
-  report_dir <- file.path(data_root, "outputs", "residence_vs_alert_reports")
+    maps_dir = file.path(data_root, "outputs", linelist_meta$basename, "residence_vs_alert_health_area_maps")) {
+  report_dir <- file.path(data_root, "outputs", linelist_meta$basename, "residence_vs_alert_reports")
   dir.create(report_dir, recursive = TRUE, showWarnings = FALSE)
   report_stem <- paste0("ResidenceAlertReport_", linelist_meta$coded)
 
@@ -236,7 +236,7 @@ if (sys.nframe() == 0L) {
   # Derive the run label from the latest synced date folder instead.
   epi_dir <- resolve_epi_latest_dir()
   linelist_meta <- parse_dhis2_linelist_date(epi_dir)
-  maps_dir <- file.path(data_root, "outputs", "residence_vs_alert_health_area_maps")
+  maps_dir <- file.path(data_root, "outputs", linelist_meta$basename, "residence_vs_alert_health_area_maps")
 
   province_results <- list()
   for (prov_key in c("ituri", "nord kivu")) {
