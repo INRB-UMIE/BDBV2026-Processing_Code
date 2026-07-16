@@ -5,12 +5,13 @@
     "pipeline": {
       "name": "dhis2_epi_linelist_downstream",
       "steps": {
-        "1_delays_and_imputation": "pipelines/epi_linelist_pipeline/1-delays_and_imputation.R",
-        "2_aggregate": "pipelines/epi_linelist_pipeline/2-aggregate-linelist.R",
-        "3_nowcasting_prep": "pipelines/epi_linelist_pipeline/3-nowcasting_prep.R",
+        "1_fit_delay_distributions": "pipelines/epi_linelist_pipeline/1-fit_delay_distributions.R",
+        "2_date_imputation": "pipelines/epi_linelist_pipeline/2-date_imputation.R",
+        "3_aggregate": "pipelines/epi_linelist_pipeline/3-aggregate-linelist.R",
         "4_dashboard_plots": "pipelines/epi_linelist_pipeline/4-make-dashboard-plots.R",
         "5_map_residence_health_areas": "pipelines/epi_linelist_pipeline/5-map-residence-health-areas.R",
-        "6_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/6-residence-vs-alert-report.R"
+        "6_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/6-residence-vs-alert-report.R",
+        "7_nowcasting_prep": "pipelines/epi_linelist_pipeline/7-nowcasting_prep.R"
       }
     },
     "data": {
@@ -18,6 +19,7 @@
       "files": {
         "processed_linelist": "dhis2_processed_linelist_ctsafe.csv",
         "linelist_with_delays": "dhis2_linelist_with_delays.csv",
+        "linelist_with_imputed_onset": "dhis2_linelist_with_imputed_onset.csv",
         "province_aggregated": "province_aggregated.csv",
         "nowcasting_prep": "dhis2_nowcasting_prep.csv",
         "nowcasting_daily_counts": "dhis2_nowcasting_daily_counts.csv",
@@ -88,9 +90,15 @@
       ]
     },
     "delay_distribution_fit": {
-      "_comment": "Config for the onset-to-reporting delay distribution fit in 1-delays_and_imputation.R (epidist/cmdstanr). onset_cutoff_start excludes a known onset-date data-quality issue prior to that date -- confirm/update periodically as data quality upstream changes.",
+      "_comment": "Config for the onset-to-reporting delay distribution fit in 1-fit_delay_distributions.R (epidist/cmdstanr). onset_cutoff_start excludes a known onset-date data-quality issue prior to that date -- confirm/update periodically as data quality upstream changes.",
       "onset_cutoff_start": "2026-06-14",
       "min_rows_for_fit": 10
+    },
+    "date_imputation": {
+      "_comment": "Config for imputing missing/out-of-range onset dates in 2-date_imputation.R, by sampling from the best-fit onset_to_reporting_days distribution (delay_distribution_fit_summary.csv, written by 1-fit_delay_distributions.R). interval_width sets the [lower, upper] onset-date interval recorded per imputed row (0.95 = the fitted delay's 2.5th/97.5th percentile). max_resample_attempts bounds how many times an out-of-[min_days, max_days] draw is redrawn before it's clamped instead. random_seed is fixed so reruns against unchanged data reproduce the same imputed dates rather than reshuffling them every run.",
+      "interval_width": 0.95,
+      "max_resample_attempts": 20,
+      "random_seed": 20260715
     }
   }
 }
