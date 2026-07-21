@@ -97,6 +97,13 @@ status_aggregated_csv <- file.path(epi_outputs_dir, "status_aggregated.csv")
 write.csv(dhis2_linelist_aggregated_status, status_aggregated_csv, row.names = FALSE)
 message("  Wrote: ", status_aggregated_csv, " (", nrow(dhis2_linelist_aggregated_status), " rows)")
 
+dhis2_linelist_aggregated_status_filtered <- dhis2_linelist_aggregated_status |>
+  dplyr::select(!c(blank, not_a_case, probable_case, suspected_case))
+
+status_aggregated_positives_only_csv <- file.path(epi_outputs_dir, "status_aggregated_positives_only.csv")
+write.csv(dhis2_linelist_aggregated_status_filtered, status_aggregated_positives_only_csv, row.names = FALSE)
+message("  Wrote: ", status_aggregated_positives_only_csv, " (", nrow(dhis2_linelist_aggregated_status), " rows)")
+
 # -------------------------- Positivity Aggregation -----------------------------
 message("")
 message("C. ROLLING POSITIVITY")
