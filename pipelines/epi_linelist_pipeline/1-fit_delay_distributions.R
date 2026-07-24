@@ -434,6 +434,20 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
       dplyr::filter(date_of_symptom_onset > ONSET_FIT_CUTOFF, date_of_symptom_onset < Sys.Date()) |>
       dplyr::filter(!is.na(.data[[delay_name]]), .data[[delay_name]] >= 0)
 
+    if ("first_seen_date" %in% names(eligible)) {
+      suspicious <- eligible |>
+        dplyr::summarise(
+          any_first_seen_before_secondary = any(first_seen_date < .data[[sdate_col]], na.rm = TRUE),
+          any_first_seen_before_onset = any(first_seen_date < date_of_symptom_onset, na.rm = TRUE)
+        )
+      if (any(suspicious)) {
+        message(
+          "    WARNING: at least one row has a ", sdate_col,
+          "/onset date later than it was first seen in the linelist!"
+        )
+      }
+    }
+
     if (nrow(eligible) < MIN_ROWS_FOR_FIT) {
       message("    Skipping ", delay_name, ": only ", nrow(eligible),
               " eligible rows (need ", MIN_ROWS_FOR_FIT, ")")
@@ -450,11 +464,14 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
 
   # --- Phase 1+2 (parallel): fit (or load cache) + parallel_loo per job ---
   future::plan(future::multisession, workers = FIT_WORKERS)
-  on.exit(future::plan(future::sequential), add = TRUE)
 
   compute_job <- function(job) {
+    cmdstan_dir <- Sys.getenv("CMDSTAN")
+    if (nzchar(cmdstan_dir)) try(cmdstanr::set_cmdstan_path(cmdstan_dir), silent = TRUE)
+
     fit_path <- file.path(job$dir, paste0(job$family_name, "_fit.rds"))
     fit <- load_cached_rds(fit_path, "fit")
+    fit_error <- NA_character_
     if (is.null(fit)) {
       fit <- tryCatch(
         fit_one_family(
@@ -462,23 +479,34 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
           delay_fit_families[[job$family_name]],
           seed = epidist_fit_seed(job$delay_name, job$family_name)
         ),
-        error = function(e) { message("    ", job$family_name, "/", job$delay_name,
-                                       " fit failed: ", conditionMessage(e)); NULL })
+        error = function(e) { fit_error <<- conditionMessage(e); NULL })
     }
-    if (is.null(fit)) return(c(job, list(fit = NULL, loo = NULL)))
+    if (is.null(fit))
+      return(c(job, list(fit = NULL, loo = NULL, fit_error = fit_error, loo_error = NA_character_)))
 
     loo_path <- file.path(job$dir, paste0(job$family_name, "_loo.rds"))
     loo_res <- load_cached_rds(loo_path, "loo")
+    loo_error <- NA_character_
     if (is.null(loo_res)) {
       loo_res <- tryCatch(parallel_loo(fit, cores = LOO_CORES),
-        error = function(e) { message("    ", job$family_name, "/", job$delay_name,
-                                      " loo failed: ", conditionMessage(e)); NULL })
+        error = function(e) { loo_error <<- conditionMessage(e); NULL })
     }
-    c(job, list(fit = fit, loo = loo_res))
+    c(job, list(fit = fit, loo = loo_res, fit_error = fit_error, loo_error = loo_error))
   }
 
   results <- furrr::future_map(jobs, compute_job,
-    .options = furrr::furrr_options(seed = TRUE))
+    .options = furrr::furrr_options(seed = TRUE,
+      globals = c("eligible_by_delay", "delay_fit_families", "LOO_CORES",
+                  "fit_one_family", "parallel_loo", "epidist_fit_seed",
+                  "load_cached_rds", "FIT_CHAINS", "FIT_CORES")))
+
+  message("  Fit/loo outcomes:")
+  for (r in results) {
+    status <- if (is.null(r$fit)) paste0("FIT FAILED (", r$fit_error, ")")
+              else if (is.null(r$loo)) paste0("loo failed (", r$loo_error, ")")
+              else "ok"
+    message("    ", r$delay_name, " / ", r$family_name, ": ", status)
+  }
 
   # --- Phase 3 (sequential): write outputs + compare families per delay ---
   delay_distribution_summary_rows <- list()
@@ -549,6 +577,8 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     }
     message("    Wrote ", delay_name, " outputs to ", delay_dist_dir)
   }
+
+  future::plan(future::sequential)
 
   if (length(delay_distribution_summary_rows)) {
     delay_distribution_summary <- dplyr::bind_rows(delay_distribution_summary_rows)
