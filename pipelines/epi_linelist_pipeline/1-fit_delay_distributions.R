@@ -219,6 +219,10 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
 
 } else {
 
+  # Null-coalescing operator: defined locally so this script doesn't depend on
+  # whichever loaded package (purrr/rlang/base R >= 4.4) happens to export it.
+  `%||%` <- function(a, b) if (is.null(a)) b else a
+
   # Excludes a known onset-date data-quality issue prior to this date (see
   # pipeline_configs.json's epi_linelist.delay_distribution_fit._comment) --
   # confirm/update onset_cutoff_start there periodically.
@@ -262,7 +266,7 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
   FIT_CHAINS <- 4L
   FIT_CORES <- min(N_CORES_AVAILABLE, FIT_CHAINS)
 
-  fit_one_family <- function(data, sdate_col, family) {
+  fit_one_family <- function(data, sdate_col, family, seed) {
     data |>
       epidist::as_epidist_linelist_data(
         pdate_lwr = "date_of_symptom_onset",
@@ -275,7 +279,8 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
         chains = FIT_CHAINS,
         cores = FIT_CORES,
         iter = 2000,
-        backend = "cmdstanr"
+        backend = "cmdstanr",
+        seed = seed
       )
   }
 
@@ -410,14 +415,15 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     )
   }
 
-  delay_distribution_summary_rows <- list()
+  FIT_WORKERS <- as.integer(cfg$delay_distribution_fit$fit_workers %||% 12)
+  LOO_CORES   <- max(1L, N_CORES_AVAILABLE %/% FIT_WORKERS)
 
+  # --- Build the flat job list: one job per (present delay) x (family) ---
+  # Per-delay eligible sets are computed once here (was inside the loop).
+  eligible_by_delay <- list()
+  jobs <- list()
   for (delay_name in names(onset_delay_targets)) {
-
     sdate_col <- onset_delay_targets[[delay_name]]
-    message("")
-    message("  --- ", delay_name, " (onset -> ", sdate_col, ") ---")
-
     delay_dist_dir <- file.path(
       data_root, "outputs", basename(target_epi_dirs), "delay_distributions", delay_name
     )
@@ -428,152 +434,119 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
       dplyr::filter(date_of_symptom_onset > ONSET_FIT_CUTOFF, date_of_symptom_onset < Sys.Date()) |>
       dplyr::filter(!is.na(.data[[delay_name]]), .data[[delay_name]] >= 0)
 
-    if ("first_seen_date" %in% names(eligible)) {
-      suspicious <- eligible |>
-        dplyr::summarise(
-          any_first_seen_before_secondary = any(first_seen_date < .data[[sdate_col]], na.rm = TRUE),
-          any_first_seen_before_onset = any(first_seen_date < date_of_symptom_onset, na.rm = TRUE)
-        )
-      if (any(suspicious)) {
-        message(
-          "    WARNING: at least one row has a ", sdate_col,
-          "/onset date later than it was first seen in the linelist!"
-        )
-      }
-    }
-
     if (nrow(eligible) < MIN_ROWS_FOR_FIT) {
-      message(
-        "    Skipping: only ", nrow(eligible),
-        " eligible rows (need at least ", MIN_ROWS_FOR_FIT, ")"
-      )
+      message("    Skipping ", delay_name, ": only ", nrow(eligible),
+              " eligible rows (need ", MIN_ROWS_FOR_FIT, ")")
       next
     }
-
-    fits <- list()
-    loos <- list()
+    eligible_by_delay[[delay_name]] <- eligible
     for (family_name in names(delay_fit_families)) {
-      fit_path <- file.path(delay_dist_dir, paste0(family_name, "_fit.rds"))
-      fit <- load_cached_rds(fit_path, "fit")
-
-      if (!is.null(fit)) {
-        message("    ", family_name, ": using cached fit (", fit_path, ")")
-      } else {
-        message("    Fitting ", family_name, "...")
-        fit <- tryCatch(
-          fit_one_family(eligible, sdate_col, delay_fit_families[[family_name]]),
-          error = function(e) {
-            message("    ", family_name, " fit failed: ", conditionMessage(e))
-            NULL
-          }
-        )
-      }
-
-      if (is.null(fit)) next
-      fits[[family_name]] <- fit
-
-      loo_path <- file.path(delay_dist_dir, paste0(family_name, "_loo.rds"))
-      cached_loo <- load_cached_rds(loo_path, "loo")
-
-      if (!is.null(cached_loo)) {
-        message("    ", family_name, ": using cached loo (", loo_path, ")")
-        loos[[family_name]] <- cached_loo
-      } else {
-        loos[[family_name]] <- tryCatch(
-          brms::loo(fit, cores = N_CORES_AVAILABLE),
-          error = function(e) {
-            message("    ", family_name, " loo() failed: ", conditionMessage(e))
-            NULL
-          }
-        )
-      }
+      jobs[[length(jobs) + 1L]] <- list(
+        delay_name = delay_name, sdate_col = sdate_col,
+        family_name = family_name, dir = delay_dist_dir
+      )
     }
+  }
 
-    if (!length(fits)) {
+  # --- Phase 1+2 (parallel): fit (or load cache) + parallel_loo per job ---
+  future::plan(future::multisession, workers = FIT_WORKERS)
+  on.exit(future::plan(future::sequential), add = TRUE)
+
+  compute_job <- function(job) {
+    fit_path <- file.path(job$dir, paste0(job$family_name, "_fit.rds"))
+    fit <- load_cached_rds(fit_path, "fit")
+    if (is.null(fit)) {
+      fit <- tryCatch(
+        fit_one_family(
+          eligible_by_delay[[job$delay_name]], job$sdate_col,
+          delay_fit_families[[job$family_name]],
+          seed = epidist_fit_seed(job$delay_name, job$family_name)
+        ),
+        error = function(e) { message("    ", job$family_name, "/", job$delay_name,
+                                       " fit failed: ", conditionMessage(e)); NULL })
+    }
+    if (is.null(fit)) return(c(job, list(fit = NULL, loo = NULL)))
+
+    loo_path <- file.path(job$dir, paste0(job$family_name, "_loo.rds"))
+    loo_res <- load_cached_rds(loo_path, "loo")
+    if (is.null(loo_res)) {
+      loo_res <- tryCatch(parallel_loo(fit, cores = LOO_CORES),
+        error = function(e) { message("    ", job$family_name, "/", job$delay_name,
+                                      " loo failed: ", conditionMessage(e)); NULL })
+    }
+    c(job, list(fit = fit, loo = loo_res))
+  }
+
+  results <- furrr::future_map(jobs, compute_job,
+    .options = furrr::furrr_options(seed = TRUE))
+
+  # --- Phase 3 (sequential): write outputs + compare families per delay ---
+  delay_distribution_summary_rows <- list()
+  by_delay <- split(results, vapply(results, function(r) r$delay_name, character(1)))
+
+  for (delay_name in names(by_delay)) {
+    delay_results <- Filter(function(r) !is.null(r$fit), by_delay[[delay_name]])
+    if (!length(delay_results)) {
       message("    All family fits failed for ", delay_name, " -- nothing to save.")
       next
     }
+    delay_dist_dir <- delay_results[[1]]$dir
+
+    fits <- setNames(lapply(delay_results, `[[`, "fit"),
+                     vapply(delay_results, `[[`, character(1), "family_name"))
+    loos <- setNames(lapply(delay_results, `[[`, "loo"),
+                     vapply(delay_results, `[[`, character(1), "family_name"))
 
     for (family_name in names(fits)) {
       saveRDS(fits[[family_name]], file.path(delay_dist_dir, paste0(family_name, "_fit.rds")))
       writeLines(
         utils::capture.output(print(summary(fits[[family_name]]))),
-        file.path(delay_dist_dir, paste0(family_name, "_summary.txt"))
-      )
-      pp_check_plot <- tryCatch(brms::pp_check(fits[[family_name]], ndraws = 100), error = function(e) NULL)
-      if (!is.null(pp_check_plot)) {
-        ggplot2::ggsave(
-          file.path(delay_dist_dir, paste0(family_name, "_pp_check.png")),
-          pp_check_plot, width = 7, height = 5
-        )
-      }
-      # Re-saving an already-cached loo here too is harmless (same bytes) --
-      # keeping this unconditional avoids needing to track whether it was
-      # freshly computed vs. loaded from cache.
-      if (!is.null(loos[[family_name]])) {
+        file.path(delay_dist_dir, paste0(family_name, "_summary.txt")))
+      pp <- tryCatch(brms::pp_check(fits[[family_name]], ndraws = 100), error = function(e) NULL)
+      if (!is.null(pp)) ggplot2::ggsave(
+        file.path(delay_dist_dir, paste0(family_name, "_pp_check.png")), pp, width = 7, height = 5)
+      if (!is.null(loos[[family_name]]))
         saveRDS(loos[[family_name]], file.path(delay_dist_dir, paste0(family_name, "_loo.rds")))
-      }
     }
 
     best_family <- NA_character_
-    comparison <- NULL  # reset each iteration -- otherwise a delay with <2
-                        # successful loos would silently reuse the previous
-                        # delay's comparison object below.
-
+    comparison <- NULL
     loos <- loos[!vapply(loos, is.null, logical(1))]
     if (length(loos) >= 2) {
-      # loo_compare(x = <named list>) uses the list names as row labels and
-      # ranks rows best-first by expected log predictive density (elpd_diff).
       comparison <- tryCatch(loo::loo_compare(x = loos), error = function(e) {
-        message("    loo_compare() failed: ", conditionMessage(e))
-        NULL
-      })
+        message("    loo_compare() failed: ", conditionMessage(e)); NULL })
       if (!is.null(comparison)) {
         best_family <- rownames(comparison)[1]
         message("    Best fit by LOO for ", delay_name, ": ", best_family)
-        writeLines(
-          c(paste("Best family:", best_family), "", utils::capture.output(print(comparison))),
-          file.path(delay_dist_dir, "loo_compare.txt")
-        )
+        writeLines(c(paste("Best family:", best_family), "",
+                     utils::capture.output(print(comparison))),
+                   file.path(delay_dist_dir, "loo_compare.txt"))
         saveRDS(comparison, file.path(delay_dist_dir, "loo_compare.rds"))
       }
     } else if (length(loos) == 1) {
-      message("    Only one family fit succeeded (", names(loos), ") for ", delay_name, " -- nothing to compare.")
       best_family <- names(loos)
-    } else {
-      message("    No LOO comparisons available for ", delay_name, " (loo() failed for all fits).")
     }
 
-    # Build this delay's rows (one per family) for the run-wide
-    # delay_distribution_fit_summary.csv (written once, after the loop, from
-    # delay_distribution_summary_rows). elpd_diff/se_diff come straight out of
-    # loo_compare()'s own matrix, keyed by family name -- the best family's row
-    # is 0/0 by definition, and everyone else's shows their own gap from it.
     family_metrics <- Filter(Negate(is.null), lapply(names(fits), function(fam) {
-      extract_delay_distribution_summary(fits[[fam]], loos[[fam]], fam)
-    }))
+      extract_delay_distribution_summary(fits[[fam]], loos[[fam]], fam) }))
     if (length(family_metrics)) {
-      family_metrics_df <- dplyr::bind_rows(family_metrics)
-
-      elpd_diff_lookup <- setNames(rep(NA_real_, nrow(family_metrics_df)), family_metrics_df$family)
+      fmdf <- dplyr::bind_rows(family_metrics)
+      elpd_diff_lookup <- setNames(rep(NA_real_, nrow(fmdf)), fmdf$family)
       se_diff_lookup <- elpd_diff_lookup
       if (!is.null(comparison)) {
         elpd_diff_lookup[rownames(comparison)] <- comparison[, "elpd_diff"]
         se_diff_lookup[rownames(comparison)] <- comparison[, "se_diff"]
       }
-
-      delay_distribution_summary_rows[[delay_name]] <- family_metrics_df |>
+      delay_distribution_summary_rows[[delay_name]] <- fmdf |>
         dplyr::mutate(
           delay = delay_name,
-          n_eligible = nrow(eligible),
+          n_eligible = nrow(eligible_by_delay[[delay_name]]),
           is_best = family == best_family,
           elpd_diff = elpd_diff_lookup[family],
-          se_diff = se_diff_lookup[family]
-        ) |>
+          se_diff = se_diff_lookup[family]) |>
         dplyr::relocate(delay, family, n_eligible, is_best, .before = 1) |>
         dplyr::relocate(elpd_diff, se_diff, .after = looic)
     }
-
     message("    Wrote ", delay_name, " outputs to ", delay_dist_dir)
   }
 
