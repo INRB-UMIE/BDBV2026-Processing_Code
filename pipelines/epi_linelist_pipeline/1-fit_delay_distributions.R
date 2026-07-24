@@ -379,14 +379,14 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     # (works across both rstan and cmdstanr backends); best-effort, since it's
     # a secondary diagnostic -- failure here shouldn't drop the whole row.
     conv <- tryCatch({
-      s <- summary(fit)
-      rows <- dplyr::bind_rows(
-        tibble::as_tibble(s$fixed, rownames = "parameter"),
-        tibble::as_tibble(s$spec_pars, rownames = "parameter")
-      )
+      # posterior::summarise_draws (not brms::summary) keeps this fork/
+      # serialization-safe: brms::summary()'s rstan S4 dispatch fails on fits
+      # created in multisession workers ("class_model_base ... attempt to apply
+      # non-function"), whereas posterior works straight off the draws.
+      sd <- posterior::summarise_draws(posterior::as_draws(fit), "rhat", "ess_bulk")
       list(
-        max_rhat = suppressWarnings(max(rows$Rhat, na.rm = TRUE)),
-        min_ess_bulk = suppressWarnings(min(rows$Bulk_ESS, na.rm = TRUE))
+        max_rhat = suppressWarnings(max(sd$rhat, na.rm = TRUE)),
+        min_ess_bulk = suppressWarnings(min(sd$ess_bulk, na.rm = TRUE))
       )
     }, error = function(e) list(max_rhat = NA_real_, min_ess_bulk = NA_real_))
 
@@ -527,9 +527,14 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
 
     for (family_name in names(fits)) {
       saveRDS(fits[[family_name]], file.path(delay_dist_dir, paste0(family_name, "_fit.rds")))
-      writeLines(
-        utils::capture.output(print(summary(fits[[family_name]]))),
-        file.path(delay_dist_dir, paste0(family_name, "_summary.txt")))
+      # posterior::summarise_draws instead of print(summary(fit)): brms::summary
+      # reloads rstan via S4 dispatch and fails on worker-created fits. Wrapped so
+      # a diagnostic-write failure never aborts the batch.
+      tryCatch(
+        writeLines(
+          utils::capture.output(print(posterior::summarise_draws(posterior::as_draws(fits[[family_name]])))),
+          file.path(delay_dist_dir, paste0(family_name, "_summary.txt"))),
+        error = function(e) message("    ", family_name, " summary write failed: ", conditionMessage(e)))
       pp <- tryCatch(brms::pp_check(fits[[family_name]], ndraws = 100), error = function(e) NULL)
       if (!is.null(pp)) ggplot2::ggsave(
         file.path(delay_dist_dir, paste0(family_name, "_pp_check.png")), pp, width = 7, height = 5)
