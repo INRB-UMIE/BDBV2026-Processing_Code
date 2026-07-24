@@ -233,6 +233,47 @@ N_CORES_AVAILABLE <- tryCatch({
 # -----------------------------
 # Helper functions
 # -----------------------------
+# Deterministic per-fit seed so a fit is bit-identical whether run serially or
+# in a parallel worker (cmdstan is deterministic given seed + version + data).
+# Base-R only (no digest dependency); polynomial rolling hash in double
+# precision, reduced into the positive 31-bit range.
+epidist_fit_seed <- function(delay_name, family_name) {
+  key <- paste(delay_name, family_name, sep = "|")
+  h <- 0
+  for (ch in utf8ToInt(key)) h <- (h * 31 + ch) %% 2147483647
+  as.integer(h)
+}
+
+# Compute loo() for an epidist/brms fit by evaluating the pointwise
+# log-likelihood in parallel over draws, then running PSIS on the assembled
+# matrix. Uses ALL draws, so the result equals brms::loo(fit) up to floating
+# point -- the sole purpose is speed (epidist's custom-family log_lik is
+# recomputed in R per draw x observation, single-threaded inside brms::loo).
+# Forking is safe here: sampling is already done, this is pure R.
+parallel_loo <- function(fit, cores = N_CORES_AVAILABLE) {
+  cores   <- max(1L, as.integer(cores))
+  n_draws <- brms::ndraws(fit)
+  n_chains <- brms::nchains(fit)
+  draws_per_chain <- n_draws / n_chains
+
+  # Contiguous chunks preserve the original (chain-major) draw order so the
+  # reassembled matrix lines up with chain_id below.
+  chunk_id <- pmin(ceiling(seq_len(n_draws) / (n_draws / cores)), cores)
+  chunks <- split(seq_len(n_draws), chunk_id)
+
+  ll_parts <- parallel::mclapply(chunks, function(ids) {
+    brms::log_lik(fit, draw_ids = ids)
+  }, mc.cores = cores)
+
+  bad <- vapply(ll_parts, function(x) inherits(x, "try-error") || is.null(x), logical(1))
+  if (any(bad)) stop("parallel_loo: log_lik failed in ", sum(bad), " chunk(s)")
+
+  ll <- do.call(rbind, ll_parts)               # n_draws x n_obs, original order
+  chain_id <- rep(seq_len(n_chains), each = draws_per_chain)
+  r_eff <- loo::relative_eff(exp(ll), chain_id = chain_id, cores = cores)
+  loo::loo(ll, r_eff = r_eff, cores = cores)
+}
+
 get_script_dir <- function() {
   cmdArgs <- commandArgs(trailingOnly = FALSE)
   fileArg <- grep("^--file=", cmdArgs, value = TRUE)
@@ -606,7 +647,8 @@ keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "parse_linelist_date", "load_linelist_properly", "load_map_csv",
                   "N_CORES_AVAILABLE", "get_param_estimate",
                   "epidist_family_dpar", "epidist_extract_family_params",
-                  "epidist_family_rq_params")
+                  "epidist_family_rq_params",
+                  "epidist_fit_seed", "parallel_loo")
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)
 
