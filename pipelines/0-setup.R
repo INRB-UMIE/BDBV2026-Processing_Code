@@ -241,6 +241,7 @@ epidist_fit_seed <- function(delay_name, family_name) {
   key <- paste(delay_name, family_name, sep = "|")
   h <- 0
   for (ch in utf8ToInt(key)) h <- (h * 31 + ch) %% 2147483647
+  if (h == 0) h <- 1
   as.integer(h)
 }
 
@@ -251,10 +252,15 @@ epidist_fit_seed <- function(delay_name, family_name) {
 # recomputed in R per draw x observation, single-threaded inside brms::loo).
 # Forking is safe here: sampling is already done, this is pure R.
 parallel_loo <- function(fit, cores = N_CORES_AVAILABLE) {
-  cores   <- max(1L, as.integer(cores))
+  cores   <- as.integer(cores)
+  if (is.na(cores) || cores < 1L) cores <- 1L
   n_draws <- brms::ndraws(fit)
   n_chains <- brms::nchains(fit)
-  draws_per_chain <- n_draws / n_chains
+  if (n_draws %% n_chains != 0) {
+    stop("parallel_loo: draws are not evenly split across chains (", n_draws,
+         " draws / ", n_chains, " chains)", call. = FALSE)
+  }
+  draws_per_chain <- n_draws %/% n_chains
 
   # Contiguous chunks preserve the original (chain-major) draw order so the
   # reassembled matrix lines up with chain_id below.
