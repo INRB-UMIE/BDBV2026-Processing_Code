@@ -92,7 +92,8 @@
     "delay_distribution_fit": {
       "_comment": "Config for the onset-to-reporting delay distribution fit in 1-fit_delay_distributions.R (epidist/cmdstanr). onset_cutoff_start excludes a known onset-date data-quality issue prior to that date -- confirm/update periodically as data quality upstream changes.",
       "onset_cutoff_start": "2026-06-14",
-      "min_rows_for_fit": 10
+      "min_rows_for_fit": 10,
+      "fit_workers": 12
     },
     "date_imputation": {
       "_comment": "Config for imputing missing/out-of-range onset dates in 2-date_imputation.R, by sampling from the best-fit onset_to_reporting_days distribution (delay_distribution_fit_summary.csv, written by 1-fit_delay_distributions.R). interval_width sets the [lower, upper] onset-date interval recorded per imputed row (0.95 = the fitted delay's 2.5th/97.5th percentile). max_resample_attempts bounds how many times an out-of-[min_days, max_days] draw is redrawn before it's clamped instead. random_seed is fixed so reruns against unchanged data reproduce the same imputed dates rather than reshuffling them every run.",
