@@ -24,7 +24,7 @@ req_pkgs <- c(
   "readr", "dplyr", "tidyr", "purrr", "stringr",
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
-  "brms", "bayesplot", "loo", "svglite",
+  "brms", "bayesplot", "loo", "svglite", "future", "furrr",
   "rmarkdown", # 8-summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
   "rsvg",     # rasterizing dashboard SVGs for PDF embedding in 8-summary-report.Rmd
   "tinytex"   # LaTeX engine rmarkdown needs to knit 8-summary-report.Rmd to PDF
@@ -203,6 +203,8 @@ suppressWarnings(suppressPackageStartupMessages({
   library(brms)
   library(bayesplot)
   library(loo)
+  library(future)
+  library(furrr)
   library(epidist)
   library(primarycensored)
   library(cmdstanr)
