@@ -24,7 +24,7 @@ req_pkgs <- c(
   "readr", "dplyr", "tidyr", "purrr", "stringr",
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
-  "brms", "bayesplot", "loo", "svglite", "future", "furrr",
+  "brms", "bayesplot", "loo", "posterior", "svglite", "future", "furrr",
   "rmarkdown", # 8-summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
   "rsvg",     # rasterizing dashboard SVGs for PDF embedding in 8-summary-report.Rmd
   "tinytex"   # LaTeX engine rmarkdown needs to knit 8-summary-report.Rmd to PDF
@@ -254,7 +254,11 @@ epidist_fit_seed <- function(delay_name, family_name) {
 parallel_loo <- function(fit, cores = N_CORES_AVAILABLE) {
   cores   <- as.integer(cores)
   if (is.na(cores) || cores < 1L) cores <- 1L
+  # parallel::mclapply forks, which is unavailable on Windows -- fall back to
+  # serial there so the helper is portable (the pipeline itself runs on Linux).
+  if (.Platform$OS.type == "windows") cores <- 1L
   n_draws <- brms::ndraws(fit)
+  cores   <- min(cores, n_draws)   # never spawn more workers than there are draws
   n_chains <- brms::nchains(fit)
   if (n_draws %% n_chains != 0) {
     stop("parallel_loo: draws are not evenly split across chains (", n_draws,

@@ -416,6 +416,7 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
   }
 
   FIT_WORKERS <- as.integer(cfg$delay_distribution_fit$fit_workers %||% 12)
+  if (is.na(FIT_WORKERS) || FIT_WORKERS < 1L) FIT_WORKERS <- 1L  # guard bad config before future::plan()
   LOO_CORES   <- max(1L, N_CORES_AVAILABLE %/% FIT_WORKERS)
 
   # --- Build the flat job list: one job per (present delay) x (family) ---
