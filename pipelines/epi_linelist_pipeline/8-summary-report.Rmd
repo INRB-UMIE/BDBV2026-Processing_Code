@@ -441,7 +441,7 @@ manifest <- if (file.exists(manifest_path)) {
 } else {
   NULL
 }
-lab_plot_dir <- file.path(epi_outputs_dir, "dashboard_plots", "lab")
+lab_plot_dir <- file.path(epi_outputs_dir, "dashboard_plots", "lab_plots")
 n_lab_plots <- if (dir.exists(lab_plot_dir)) length(list.files(lab_plot_dir, pattern = "\\.svg$")) else 0L
 ```
 
@@ -449,7 +449,7 @@ n_lab_plots <- if (dir.exists(lab_plot_dir)) length(list.files(lab_plot_dir, pat
 if (is.null(manifest)) {
   not_available("Dashboard plot manifest (outputs/manifest.json)")
 } else {
-  provinces_with_plots <- names(manifest$plots)
+  provinces_with_plots <- names(manifest$plots$confirmed_cases_and_positivity)
   cat(
     "`outputs/manifest.json` currently points at **", manifest$date, "** ",
     "(this run: ", basename(epi_dir), ").\n\n"
@@ -467,6 +467,16 @@ if (is.null(manifest)) {
     }
   }
   cat(n_lab_plots, " lab plot(s) generated.\n\n")
+  if (!is.null(manifest$plots$lab_plots)) {
+    cat(length(manifest$plots$lab_plots), " lab plot(s) indexed in manifest with location metadata.\n\n")
+  }
+  if (!is.null(manifest$indexes$by_health_zone$Bunia)) {
+    bunia_labs <- manifest$indexes$by_health_zone$Bunia$lab_codes
+    if (length(bunia_labs)) {
+      cat("Example index lookup: Bunia health zone includes lab plot(s): ",
+          paste(bunia_labs, collapse = ", "), ".\n\n")
+    }
+  }
   if (!is.null(manifest$incomplete_styling)) {
     cat(
       "Dates within the last ", manifest$incomplete_styling$days,
@@ -476,21 +486,34 @@ if (is.null(manifest)) {
 }
 ```
 
-### National daily onset & positivity
+### National daily onset
 
 ```{r plot-national, results='asis'}
-national_svg <- file.path(epi_outputs_dir, "dashboard_plots", "national", "daily_onset_national.svg")
+national_svg <- file.path(
+  epi_outputs_dir, "dashboard_plots", "confirmed_cases_and_positivity",
+  "national", "daily_onset_national.svg"
+)
 include_svg(national_svg)
 ```
 
-### Province-level daily onset & positivity
+### National rolling test positivity
+
+```{r plot-national-positivity, results='asis'}
+national_pos_svg <- file.path(
+  epi_outputs_dir, "dashboard_plots", "rolling_positivity",
+  "national", "rolling_positivity_national.svg"
+)
+include_svg(national_pos_svg)
+```
+
+### Province-level daily onset
 
 ```{r plot-province, results='asis'}
-if (is.null(manifest) || !length(manifest$plots)) {
+if (is.null(manifest) || !length(manifest$plots$confirmed_cases_and_positivity)) {
   not_available("Province-level plots")
 } else {
-  for (province in names(manifest$plots)) {
-    svg_path <- file.path(data_root, "outputs", manifest$plots[[province]]$file)
+  for (province in names(manifest$plots$confirmed_cases_and_positivity)) {
+    svg_path <- file.path(data_root, "outputs", manifest$plots$confirmed_cases_and_positivity[[province]]$file)
     cat("**", province, "**\n\n")
     include_svg(svg_path)
   }
@@ -514,7 +537,7 @@ if (is.null(status_aggregated)) {
       zone <- top5$health_zone[i]
       cat("**", zone, "** — ", top5$confirmed_case[i], " confirmed case(s) total\n\n")
       svg_path <- file.path(
-        epi_outputs_dir, "dashboard_plots", "healthzone",
+        epi_outputs_dir, "dashboard_plots", "confirmed_cases_and_positivity", "healthzone",
         paste0("daily_onset_", slugify(zone), ".svg")
       )
       include_svg(svg_path)
