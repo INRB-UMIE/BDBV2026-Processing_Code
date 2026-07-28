@@ -7,8 +7,13 @@ output:
     latex_engine: xelatex
 # Custom knit target: always renders to PDF, into this run's own
 # outputs/<DATE>/ folder (alongside status_aggregated.csv, dashboard_plots/,
-# etc.) rather than next to this .Rmd file, so "Knit" in RStudio (or
-# rmarkdown::render(<this file>) with no other arguments) just works.
+# etc.) rather than next to this .Rmd file, so "Knit" in RStudio just works.
+# NOTE: a plain `rmarkdown::render(<this file>)` from a script/console does
+# NOT pick this up -- the knit: field is only honoured by RStudio's Knit
+# button (see https://github.com/rstudio/rmarkdown/issues/1711). Non-
+# interactive callers (e.g. the CI workflow) must pull this function out of
+# the YAML front matter and call it directly -- see the "Render summary
+# report (step 8)" step in run-processing-code-pipeline.yml for that.
 #
 # This has to resolve data_root/the latest synced date *before*
 # rmarkdown::render() starts (render() needs output_dir up front), which
@@ -77,17 +82,30 @@ automatically today (run-processing-code-pipeline.yml). Steps 5-7 (residence
 mapping, residence-vs-alert reporting, nowcasting prep) are manual-only and
 not summarised here.
 
-NOT wired into any GitHub Actions workflow yet -- render manually for now:
-  rmarkdown::render("pipelines/epi_linelist_pipeline/8-summary-report.Rmd")
-or via RStudio's Knit button (both honour the custom `knit:` field above,
-which knits to PDF into this run's own outputs/<DATE>/ folder -- see that
+Wired into run-processing-code-pipeline.yml as its own step, right after
+steps 1-4 finish (see the "Render summary report (step 8)" step there).
+Can also still be rendered manually via RStudio's Knit button, which DOES
+honour the custom `knit:` field above -- that's what knits to PDF into this
+run's own outputs/<DATE>/ folder rather than next to this .Rmd (see that
 field's own comment for why it can't just source 0-setup.R directly).
+A plain `rmarkdown::render("pipelines/epi_linelist_pipeline/8-summary-report.Rmd")`
+from a script or console, by contrast, does NOT honour the knit: field (it's
+an RStudio-Knit-button-only mechanism -- see
+https://github.com/rstudio/rmarkdown/issues/1711) and will silently fall
+back to rmarkdown's own default output location/filename instead. The CI
+step above pulls the knit: field's function out of the YAML front matter and
+calls it directly to get the same behaviour non-interactively.
 
-Requires a working LaTeX install for the PDF knit (0-setup.R installs
-TinyTeX automatically if missing -- a few minutes, one-time) and the `rsvg`
-package to rasterize the dashboard's SVGs for embedding (CRAN ships
-pre-built binaries for it on macOS/Windows; on Linux you'd need
-libcairo2-dev/librsvg2-dev system packages first).
+Requires a working LaTeX install for the PDF knit and the `rsvg` package to
+rasterize the dashboard's SVGs for embedding. In CI, TinyTeX is baked into
+the bdbv2026-cmdstan image (see docker/cmdstan/Dockerfile in
+BDBV2026-Processed_Sensitive_Data) rather than installed at pipeline run
+time, since the pipeline's self-hosted runner has restricted network
+access -- the on-demand tinytex::install_tinytex() call in this file's setup
+chunk below is only a fallback for local/manual renders on a machine that
+doesn't already have TinyTeX (rsvg similarly ships pre-built binaries for
+macOS/Windows from CRAN; on Linux you'd need libcairo2-dev/librsvg2-dev
+system packages first, both baked into the image already).
 
 Every section reads its input from disk (outputs/<DATE>/...) rather than
 relying on in-memory objects from a prior step, since a knit is normally a
@@ -126,6 +144,28 @@ if (!file.exists(setup_path)) {
 source(setup_path, local = FALSE)
 # 0-setup.R re-resolves and overwrites code_root/data_root globally -- the
 # code_root value above was only needed to locate 0-setup.R in the first place.
+
+# tinytex (the R package, installed by 0-setup.R above) just wraps a LaTeX
+# distribution -- it still needs that distribution actually installed once
+# before rmarkdown can knit this report to PDF. This used to live in
+# 0-setup.R itself, but that's sourced by every pipeline step (including
+# steps 1-4, which are CI-automated and never render a PDF), so it was
+# retrying a network install on every automated run for a feature only this
+# manual-only report needs. Lives here instead, so it only ever runs when
+# this report is actually being rendered.
+if (requireNamespace("tinytex", quietly = TRUE) && !tinytex::is_tinytex()) {
+  message("TinyTeX not found -- installing (needed to knit this report to PDF)...")
+  tryCatch(
+    tinytex::install_tinytex(),
+    error = function(e) {
+      warning(
+        "tinytex::install_tinytex() failed: ", conditionMessage(e),
+        " -- this report's PDF knit will fail until this is resolved manually.",
+        call. = FALSE
+      )
+    }
+  )
+}
 
 epi_dir <- resolve_epi_latest_dir()
 epi_outputs_dir <- file.path(data_root, "outputs", basename(epi_dir))

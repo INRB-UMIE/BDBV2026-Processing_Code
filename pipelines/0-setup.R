@@ -166,23 +166,17 @@ if (requireNamespace("cmdstanr", quietly = TRUE)) {
   }
 }
 
-# tinytex (the R package) just wraps a LaTeX distribution -- it still needs
-# that distribution actually installed once before rmarkdown can knit
-# 8-summary-report.Rmd to PDF. Same one-time-heavy-install shape as CmdStan
-# above, just much lighter (a couple of minutes, not 10-20).
-if (requireNamespace("tinytex", quietly = TRUE) && !tinytex::is_tinytex()) {
-  message("TinyTeX not found -- installing (needed to knit 8-summary-report.Rmd to PDF)...")
-  tryCatch(
-    tinytex::install_tinytex(),
-    error = function(e) {
-      warning(
-        "tinytex::install_tinytex() failed: ", conditionMessage(e),
-        " -- 8-summary-report.Rmd's PDF knit will fail until this is resolved manually.",
-        call. = FALSE
-      )
-    }
-  )
-}
+# NOTE: installing the actual TinyTeX/LaTeX distribution (as opposed to just
+# the tinytex R package above) is deliberately NOT done here. 0-setup.R is
+# sourced by every pipeline step, including steps 1-4 which are the only ones
+# run automatically in CI (run-processing-code-pipeline.yml) and never knit
+# any PDF -- installing it here meant every one of those 4 Rscript
+# invocations retried a several-second network install on every single run,
+# only to fail every time in that environment and log a warning, for a
+# feature none of them use. Only 8-summary-report.Rmd (manual-only, not
+# wired into CI) actually needs the LaTeX distribution, so that on-demand
+# install now lives in its own setup chunk instead. See that file's setup
+# chunk for the actual install_tinytex() call.
 
 suppressWarnings(suppressPackageStartupMessages({
   library(readr)
