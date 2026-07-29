@@ -5,6 +5,12 @@
 #     confirmed_case/not_a_case/probable_case/suspected_case), at national,
 #     province, and health-zone spatial scales (one long table, a
 #     "spatial_scale" column plus NA placeholders distinguish the scales)
+#   - Writes status_aggregated_positives_only.csv: same table with only
+#     confirmed_case counts (non-positive classifications dropped)
+#   - Writes cumulative_positive_deaths.csv: daily and cumulative counts of
+#     confirmed death alerts (type_of_alert = death,
+#     final_mve_case_classification = confirmed_case) by reporting_date, at the
+#     same three spatial scales
 #   - Writes rolling_positivity.csv: 5-day rolling test positivity (Wilson CI),
 #     at the same three spatial scales, when lab_analysis_date is present in
 #     this sync -- else an empty placeholder
@@ -104,9 +110,55 @@ status_aggregated_positives_only_csv <- file.path(epi_outputs_dir, "status_aggre
 write.csv(dhis2_linelist_aggregated_status_filtered, status_aggregated_positives_only_csv, row.names = FALSE)
 message("  Wrote: ", status_aggregated_positives_only_csv, " (", nrow(dhis2_linelist_aggregated_status), " rows)")
 
+# ---------------------- Cumulative Positive Deaths -----------------------------
+message("")
+message("C. CUMULATIVE POSITIVE DEATHS")
+
+deaths_base <- processed_dhis2_linelist |>
+  dplyr::filter(trimws(as.character(type_of_alert)) == "death") |>
+  dplyr::filter(final_mve_case_classification == "confirmed_case") |>
+  dplyr::filter(!is.na(reporting_date)) |>
+  dplyr::filter(!reporting_date < as.Date("2026-04-01"))
+
+national_deaths <- deaths_base |>
+  dplyr::group_by(country, reporting_date) |>
+  dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
+  dplyr::arrange(reporting_date) |>
+  dplyr::group_by(country) |>
+  dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(spatial_scale = "national", province = NA_character_, health_zone = NA_character_)
+
+province_deaths <- deaths_base |>
+  dplyr::group_by(country, province, reporting_date) |>
+  dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
+  dplyr::arrange(province, reporting_date) |>
+  dplyr::group_by(province) |>
+  dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(spatial_scale = "province", health_zone = NA_character_)
+
+healthzone_deaths <- deaths_base |>
+  dplyr::group_by(country, health_zone, reporting_date) |>
+  dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
+  dplyr::arrange(health_zone, reporting_date) |>
+  dplyr::group_by(health_zone) |>
+  dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(spatial_scale = "healthzone", province = NA_character_)
+
+dhis2_linelist_cumulative_positive_deaths <- dplyr::bind_rows(
+  national_deaths, province_deaths, healthzone_deaths
+) |>
+  dplyr::arrange(reporting_date)
+
+cumulative_positive_deaths_csv <- file.path(epi_outputs_dir, "cumulative_positive_deaths.csv")
+write.csv(dhis2_linelist_cumulative_positive_deaths, cumulative_positive_deaths_csv, row.names = FALSE)
+message("  Wrote: ", cumulative_positive_deaths_csv, " (", nrow(dhis2_linelist_cumulative_positive_deaths), " rows)")
+
 # -------------------------- Positivity Aggregation -----------------------------
 message("")
-message("C. ROLLING POSITIVITY")
+message("D. ROLLING POSITIVITY")
 
 # positivity_aggregated.csv requires lab_analysis_date — skip gracefully for older linelists
 if ("lab_analysis_date" %in% names(processed_dhis2_linelist)) {
@@ -269,7 +321,7 @@ if ("lab_analysis_date" %in% names(processed_dhis2_linelist)) {
 
 # ---------------------------- Status Aggregation --------------------------------
 message("")
-message("D. LAB POSITIVITY")
+message("E. LAB POSITIVITY")
 
 if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
   message("  Skipping lab table — lab_analysis_date column absent in latest processed linelist.")
@@ -279,6 +331,7 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
   # the explicit encoding override. Unmapped codes fall back to NA, same as
   # the old recode()'s .default did.
   LAB_NAME_MAP <- load_map_csv("lab_name_map", encoding = "macintosh")
+  LAB_LOCATION_MAP <- load_lab_location_map()
 
   laboratory_table <- processed_dhis2_linelist |>
     dplyr::filter(!lab_analysis_date < as.Date("2026-04-01")) |> #theres a date from february that is probably an error
@@ -300,18 +353,9 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
     dplyr::group_by(lab_name) |>
     dplyr::mutate(overall_positivity = sum(confirmed_case)/total_samples_analysed,
                   scaler = max(total_samples_analysed_daily)) |>
-    dplyr::mutate(health_zone = recode(lab_name, 
-                                    LPSPBN = "Bunia",
-                                    INRBK = "Kinshasa",
-                                    INRBGM = "Goma",
-                                    LBNYA = "Nyankunde",
-                                    INRBATB = "Beni",
-                                    Lab_MGL = "Mongbwalu",
-                                    INRBANTB = "Butembo",
-                                    .default = NA_character_
-                                    )) |>
-    dplyr::mutate(lab_name_long = unname(LAB_NAME_MAP[lab_name])) |>
     dplyr::ungroup() |>
+    dplyr::left_join(LAB_LOCATION_MAP, by = c("lab_name" = "lab_code")) |>
+    dplyr::mutate(lab_name_long = unname(LAB_NAME_MAP[lab_name])) |>
     dplyr::mutate(earliest_overall = min(lab_analysis_date),
                   latest_overall = max(lab_analysis_date),
                   lab_analysis_date = as.Date(lab_analysis_date))
@@ -322,7 +366,10 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
   # aggregation above, but by lab and on lab_analysis_date (the lab's own analysis
   # day) rather than onset date -- reuses the counts laboratory_table already built.
   lab_positivity_5day <- laboratory_table |>
-    dplyr::select(lab_name, lab_name_long, lab_analysis_date, earliest_analysed_sample, confirmed_case, total_samples_analysed_daily) |>
+    dplyr::select(
+      lab_name, lab_name_long, health_zone, province, lab_analysis_date,
+      earliest_analysed_sample, confirmed_case, total_samples_analysed_daily
+    ) |>
     dplyr::mutate(lab_analysis_date = as.Date(lab_analysis_date)) |>
     dplyr::filter(!is.na(lab_analysis_date)) |>
     dplyr::arrange(lab_name, lab_analysis_date) |>
@@ -370,8 +417,8 @@ dhis2_linelist_aggregated = T
 # rm() below would wipe them before step 4 gets a chance to look).
 keep_objects <- c(
   keep_objects, "dhis2_linelist_aggregated",
-  "dhis2_linelist_aggregated_status", "dhis2_linelist_positivity_aggregated",
-  "lab_positivity_5day"
+  "dhis2_linelist_aggregated_status", "dhis2_linelist_cumulative_positive_deaths",
+  "dhis2_linelist_positivity_aggregated", "lab_positivity_5day"
 )
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)

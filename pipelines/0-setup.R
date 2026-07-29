@@ -603,6 +603,34 @@ load_map_csv <- function(name, maps_dir = file.path(data_root, "assets", "maps")
   stats::setNames(df$value, df$key)
 }
 
+#' Load lab_code -> health_zone/province metadata from
+#' data_root/assets/maps/lab_location_map.csv.
+load_lab_location_map <- function(name = "lab_location_map", maps_dir = file.path(data_root, "assets", "maps"), encoding = "UTF-8") {
+  path <- file.path(maps_dir, paste0(name, ".csv"))
+  if (!file.exists(path)) {
+    stop("Lab location map CSV not found: ", path, call. = FALSE)
+  }
+  raw <- readBin(path, what = "raw", n = file.size(path))
+  utf8_bom <- as.raw(c(0xef, 0xbb, 0xbf))
+  if (length(raw) >= 3 && identical(raw[1:3], utf8_bom)) {
+    raw <- raw[-(1:3)]
+  }
+  text <- iconv(rawToChar(raw), from = encoding, to = "UTF-8")
+  df <- read.csv(
+    text = text, stringsAsFactors = FALSE, colClasses = "character",
+    na.strings = c("", "NA", "N/A")
+  )
+  required <- c("lab_code", "health_zone", "province")
+  if (length(setdiff(required, names(df)))) {
+    stop("Lab location map CSV missing columns: ", path, call. = FALSE)
+  }
+  df$lab_code <- trimws(df$lab_code)
+  df$health_zone <- trimws(df$health_zone)
+  df$province <- trimws(df$province)
+  df <- df[nzchar(df$lab_code), , drop = FALSE]
+  df[!duplicated(df$lab_code), , drop = FALSE]
+}
+
 #' Read a synced linelist CSV the "proper" way, for use by any pipeline step:
 #'   - Normalizes blank/NA tokens ("", "NA", "N/A") consistently as NA across
 #'     every column, instead of each script handling blanks its own way
@@ -649,6 +677,7 @@ keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "resolve_epi_latest_dir", "epi_latest_dir", "parse_dhis2_linelist_date",
                   "parse_synced_date_dir", "dhis2_force_stems",
                   "parse_linelist_date", "load_linelist_properly", "load_map_csv",
+                  "load_lab_location_map",
                   "N_CORES_AVAILABLE", "get_param_estimate",
                   "epidist_family_dpar", "epidist_extract_family_params",
                   "epidist_family_rq_params",
