@@ -132,7 +132,7 @@ if (!length(incomplete_reporting_days) || is.na(incomplete_reporting_days) || in
 SERIES_DEFS <- data.frame(
   id = c("d_pos", "d_neg", "d_inv", "d_blk"),
   label = c("Confirmed", "Negative", "Invalid Result", "Unclassified"),
-  color = c("#b23b2e", "#5b86b3", "#d08163", "#9c968b"),
+  color = c("#9B7D4E", "#5b86b3", "#d08163", "#9c968b"),
   stringsAsFactors = FALSE
 )
 
@@ -143,7 +143,7 @@ SERIES_DEFS <- data.frame(
 ONSET_STATUS_SERIES <- data.frame(
   id = c("observed", "imputed"),
   label = c("Confirmed (Observed Onset)", "Confirmed (Imputed Onset)"),
-  color = c(SERIES_DEFS$color[SERIES_DEFS$id == "d_pos"], "#f1ccc6"),
+  color = c(SERIES_DEFS$color[SERIES_DEFS$id == "d_pos"], "#C9A266"),
   stringsAsFactors = FALSE
 )
 
