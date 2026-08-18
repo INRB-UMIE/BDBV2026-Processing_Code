@@ -108,7 +108,10 @@ filter_infectious_pairs <- function(df, prov_key) {
     (clean_key(hz) != clean_key(res_ha))
 
   if ("type_of_alert" %in% names(df)) {
-    keep <- keep & trimws(as.character(df$type_of_alert)) != "death"
+    # is_death_alert() (0-setup.R) rather than an exact `!= "death"` test: the
+    # upstream export switched to "Décès" on 2026-08-10, which silently turned
+    # this exclusion into a no-op and let death alerts into the pair maps.
+    keep <- keep & !is_death_alert(df$type_of_alert)
   }
 
   df[keep, c("health_area", "permanent_residence_health_area", "health_zone"), drop = FALSE]

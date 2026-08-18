@@ -114,11 +114,46 @@ message("  Wrote: ", status_aggregated_positives_only_csv, " (", nrow(dhis2_line
 message("")
 message("C. CUMULATIVE POSITIVE DEATHS")
 
+# is_death_alert() / unrecognised_alert_labels() are defined in 0-setup.R --
+# see the "Alert-type labels" block there for why this is a normalised match
+# rather than an exact `== "death"` comparison.
+alert_labels_seen <- unique(trimws(as.character(processed_dhis2_linelist$type_of_alert)))
+alert_labels_seen <- alert_labels_seen[!is.na(alert_labels_seen) & nzchar(alert_labels_seen)]
+unknown_alert_labels <- unrecognised_alert_labels(processed_dhis2_linelist$type_of_alert)
+if (length(unknown_alert_labels)) {
+  warning("Unrecognised type_of_alert value(s): ",
+          paste(sprintf('"%s"', unknown_alert_labels), collapse = ", "),
+          ". Add a key for each to assets/maps/type_of_alert_map.csv in ",
+          "BDBV2026-Processed_Sensitive_Data (and to DEATH_ALERT_LABELS / ",
+          "CASE_ALERT_LABELS in pipelines/0-setup.R if it is a new spelling).",
+          call. = FALSE, immediate. = TRUE)
+}
+
 deaths_base <- processed_dhis2_linelist |>
-  dplyr::filter(trimws(as.character(type_of_alert)) == "death") |>
+  dplyr::filter(is_death_alert(type_of_alert)) |>
   dplyr::filter(final_mve_case_classification == "confirmed_case") |>
   dplyr::filter(!is.na(reporting_date)) |>
   dplyr::filter(!reporting_date < as.Date("2026-04-01"))
+
+# deaths_base spans the whole outbreak from 2026-04-01, not just this sync, so
+# once any confirmed death alert exists it stays non-empty. Empty therefore
+# means a filter stopped matching, not a quiet day. Only hard-fail when we can
+# actually prove the data changed shape (an unrecognised label is present);
+# otherwise warn, so a legitimately death-free early period can't wedge the
+# pipeline and block steps 4 and 8.
+if (nrow(processed_dhis2_linelist) > 0L && nrow(deaths_base) == 0L) {
+  empty_deaths_msg <- paste0(
+    "No confirmed death alerts matched in a linelist of ",
+    nrow(processed_dhis2_linelist), " rows. type_of_alert values present: ",
+    paste(sprintf('"%s"', alert_labels_seen), collapse = ", "),
+    ". cumulative_positive_deaths.csv would be header-only and no ",
+    "cumulative-death plots would be built."
+  )
+  if (length(unknown_alert_labels)) {
+    stop(empty_deaths_msg, call. = FALSE)
+  }
+  warning(empty_deaths_msg, call. = FALSE, immediate. = TRUE)
+}
 
 national_deaths <- deaths_base |>
   dplyr::group_by(country, reporting_date) |>

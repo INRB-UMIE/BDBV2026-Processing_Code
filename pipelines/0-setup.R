@@ -659,6 +659,45 @@ load_linelist_properly <- function(path, date_columns = NULL) {
 
 
 # -----------------------------
+# Alert-type labels
+# -----------------------------
+# type_of_alert reaches the pipeline already value-mapped upstream (see
+# assets/maps/type_of_alert_map.csv in BDBV2026-Processed_Sensitive_Data), but
+# values with no key in that map pass through raw rather than erroring. On
+# 2026-08-10 the DHIS2 export switched from "DCD"/"deceased" to "Décès", the
+# map had no key for it, and every exact `== "death"` test in the pipeline
+# silently stopped matching: step 3 wrote a header-only
+# cumulative_positive_deaths.csv (so step 4 built no cumulative-death plots),
+# and step 5's inverse `!= "death"` test stopped excluding death alerts from
+# the residence pair maps. Compare normalised labels instead of raw strings so
+# French and English spellings both resolve, and keep the vocabulary in one
+# place so the steps can't drift apart.
+DEATH_ALERT_LABELS <- c("death", "deaths", "deces", "dcd", "deceased",
+                        "mort", "morts", "decede", "decedee")
+CASE_ALERT_LABELS <- c("case", "cases", "cas", "alive", "vivant")
+
+normalise_alert_label <- function(x) {
+  x <- trimws(as.character(x))
+  # //TRANSLIT renders "é" as either "e" or "'e" depending on platform and
+  # locale; stripping non-alphanumerics afterwards collapses both to "e".
+  ascii <- suppressWarnings(iconv(x, from = "UTF-8", to = "ASCII//TRANSLIT"))
+  x <- ifelse(is.na(ascii), x, ascii)
+  tolower(gsub("[^[:alnum:]]+", "", x))
+}
+
+is_death_alert <- function(x) normalise_alert_label(x) %in% DEATH_ALERT_LABELS
+
+# Alert labels matching neither vocabulary -- the signal that the upstream
+# value map has drifted again. Returns the raw (un-normalised) labels so the
+# caller can name them in a warning.
+unrecognised_alert_labels <- function(x) {
+  seen <- unique(trimws(as.character(x)))
+  seen <- seen[!is.na(seen) & nzchar(seen)]
+  seen[!normalise_alert_label(seen) %in% c(DEATH_ALERT_LABELS, CASE_ALERT_LABELS)]
+}
+
+
+# -----------------------------
 # Load Config
 # -----------------------------
 config_path <- file.path(code_root, "pipelines", "pipeline_configs.json")
