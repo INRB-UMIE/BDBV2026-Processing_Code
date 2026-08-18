@@ -710,6 +710,10 @@ pipeline_configs <- jsonlite::fromJSON(config_path, simplifyVector = TRUE)
 # -----------------------------
 # Clean Environment
 # -----------------------------
+# NOTE: this is an allow-list -- the rm() below deletes everything defined
+# above that isn't named here. Any new top-level helper or constant added to
+# this file MUST be listed, or it will be silently unavailable to the pipeline
+# steps with a "could not find function" error at the point of use.
 keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "code_root", "data_root", "pipeline_configs",
                   "resolve_code_root", "resolve_data_root",
@@ -717,6 +721,9 @@ keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "parse_synced_date_dir", "dhis2_force_stems",
                   "parse_linelist_date", "load_linelist_properly", "load_map_csv",
                   "load_lab_location_map",
+                  "DEATH_ALERT_LABELS", "CASE_ALERT_LABELS",
+                  "normalise_alert_label", "is_death_alert",
+                  "unrecognised_alert_labels",
                   "N_CORES_AVAILABLE", "get_param_estimate",
                   "epidist_family_dpar", "epidist_extract_family_params",
                   "epidist_family_rq_params",
