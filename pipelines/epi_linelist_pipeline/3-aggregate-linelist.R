@@ -362,10 +362,8 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
   message("  Skipping lab table — lab_analysis_date column absent in latest processed linelist.")
 } else {
   # lab_name_map.csv (assets/maps/) is the authoritative lab code -> long name
-  # lookup -- it's saved in Mac OS Roman, not this folder's usual UTF-8, hence
-  # the explicit encoding override. Unmapped codes fall back to NA, same as
-  # the old recode()'s .default did.
-  LAB_NAME_MAP <- load_map_csv("lab_name_map", encoding = "macintosh")
+  # lookup 
+  LAB_NAME_MAP <- load_map_csv("lab_name_map")
   LAB_LOCATION_MAP <- load_lab_location_map()
 
   laboratory_table <- processed_dhis2_linelist |>
