@@ -289,11 +289,11 @@ if (is.null(delay_fit_summary)) {
 } else {
   best_only <- delay_fit_summary[delay_fit_summary$is_best %in% TRUE, , drop = FALSE]
   display_cols <- c(
-    "delay", "family", "n_eligible", "mean_days", "median_days", "sd_days",
+    "case_group", "delay", "family", "n_eligible", "mean_days", "median_days", "sd_days",
     "q2.5_days", "q97.5_days", "max_rhat", "n_divergent"
   )
   display_cols <- intersect(display_cols, names(best_only))
-  cat("Best-fitting delay distribution family per onset-anchored delay (by LOO):\n\n")
+  cat("Best-fitting delay distribution family per case group and onset-anchored delay (by LOO):\n\n")
   print(knitr::kable(best_only[, display_cols, drop = FALSE], row.names = FALSE))
   cat(
     "\n\n", nrow(delay_fit_summary), " total family fits attempted across ",
@@ -315,11 +315,12 @@ if (is.null(delay_fit_summary)) {
     for (i in seq_len(nrow(best_only))) {
       delay_name <- best_only$delay[i]
       family_name <- best_only$family[i]
+      group_name <- if ("case_group" %in% names(best_only)) best_only$case_group[i] else ""
       pp_check_png <- file.path(
-        epi_outputs_dir, "delay_distributions", delay_name,
+        epi_outputs_dir, "delay_distributions", group_name, delay_name,
         paste0(family_name, "_pp_check.png")
       )
-      cat("**", delay_name, "** (", family_name, ")\n\n")
+      cat("**", group_name, "/", delay_name, "** (", family_name, ")\n\n")
       if (file.exists(pp_check_png)) {
         include_png(pp_check_png)
       } else {

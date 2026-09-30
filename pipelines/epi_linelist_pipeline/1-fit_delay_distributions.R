@@ -6,8 +6,11 @@
 #   - Flags delays outside the plausible [min_days, max_days] window from
 #     pipeline_configs.json (nowcasting.delay) -- informational only for now
 #   - Fits lognormal/weibull/gamma delay distributions (epidist/primarycensored/
-#     cmdstanr) for every onset-anchored delay and records which family fits
-#     best per delay (delay_distribution_fit_summary.csv)
+#     cmdstanr) for every onset-anchored delay, separately per case group
+#     (pipeline_configs.json delay_distribution_fit.case_groups -- e.g. cases =
+#     confirmed + probable vs not_a_case), and records which family fits best
+#     per group x delay (delay_distribution_fit_summary.csv, case_group column;
+#     fits under delay_distributions/<group>/<delay>/)
 #   - Writes dhis2_linelist_with_delays.csv, which 2-date_imputation.R,
 #     7-nowcasting_prep.R (and any later step) reads instead of the raw
 #     ctsafe linelist
@@ -419,19 +422,32 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
   if (is.na(FIT_WORKERS) || FIT_WORKERS < 1L) FIT_WORKERS <- 1L  # guard bad config before future::plan()
   LOO_CORES   <- max(1L, N_CORES_AVAILABLE %/% FIT_WORKERS)
 
-  # --- Build the flat job list: one job per (present delay) x (family) ---
-  # Per-delay eligible sets are computed once here (was inside the loop).
+  # Case groups (pipeline_configs.json delay_distribution_fit.case_groups):
+  # group name -> the final_mve_case_classification values it covers. Each
+  # group gets its own full set of fits, so e.g. cases (confirmed + probable)
+  # and not-a-case records get separate delay distributions rather than one
+  # pooled fit. Outputs go to delay_distributions/<group>/<delay>/.
+  CASE_GROUPS <- lapply(cfg$delay_distribution_fit$case_groups, as.character)
+  if (!length(CASE_GROUPS)) {
+    stop("pipeline_configs.json delay_distribution_fit.case_groups is empty.", call. = FALSE)
+  }
+
+  # --- Build the flat job list: one job per (case group) x (present delay) x (family) ---
+  # Per-group/delay eligible sets are computed once here, keyed "<group>|<delay>".
   eligible_by_delay <- list()
   jobs <- list()
+  for (case_group in names(CASE_GROUPS)) {
   for (delay_name in names(onset_delay_targets)) {
     sdate_col <- onset_delay_targets[[delay_name]]
+    group_key <- paste(case_group, delay_name, sep = "|")
     delay_dist_dir <- file.path(
-      data_root, "outputs", basename(target_epi_dirs), "delay_distributions", delay_name
+      data_root, "outputs", basename(target_epi_dirs), "delay_distributions",
+      case_group, delay_name
     )
     dir.create(delay_dist_dir, recursive = TRUE, showWarnings = FALSE)
 
     eligible <- df |>
-      dplyr::filter(final_mve_case_classification == "confirmed_case") |>
+      dplyr::filter(final_mve_case_classification %in% CASE_GROUPS[[case_group]]) |>
       dplyr::filter(date_of_symptom_onset > ONSET_FIT_CUTOFF, date_of_symptom_onset < Sys.Date()) |>
       dplyr::filter(!is.na(.data[[delay_name]]), .data[[delay_name]] >= 0)
 
@@ -443,24 +459,27 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
         )
       if (any(suspicious)) {
         message(
-          "    WARNING: at least one row has a ", sdate_col,
+          "    WARNING (", case_group, "): at least one row has a ", sdate_col,
           "/onset date later than it was first seen in the linelist!"
         )
       }
     }
 
     if (nrow(eligible) < MIN_ROWS_FOR_FIT) {
-      message("    Skipping ", delay_name, ": only ", nrow(eligible),
+      message("    Skipping ", case_group, " / ", delay_name, ": only ", nrow(eligible),
               " eligible rows (need ", MIN_ROWS_FOR_FIT, ")")
       next
     }
-    eligible_by_delay[[delay_name]] <- eligible
+    message("    ", case_group, " / ", delay_name, ": ", nrow(eligible), " eligible rows")
+    eligible_by_delay[[group_key]] <- eligible
     for (family_name in names(delay_fit_families)) {
       jobs[[length(jobs) + 1L]] <- list(
+        case_group = case_group, group_key = group_key,
         delay_name = delay_name, sdate_col = sdate_col,
         family_name = family_name, dir = delay_dist_dir
       )
     }
+  }
   }
 
   # --- Phase 1+2 (parallel): fit (or load cache) + parallel_loo per job ---
@@ -476,9 +495,9 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     if (is.null(fit)) {
       fit <- tryCatch(
         fit_one_family(
-          eligible_by_delay[[job$delay_name]], job$sdate_col,
+          eligible_by_delay[[job$group_key]], job$sdate_col,
           delay_fit_families[[job$family_name]],
-          seed = epidist_fit_seed(job$delay_name, job$family_name)
+          seed = epidist_fit_seed(job$group_key, job$family_name)
         ),
         error = function(e) { fit_error <<- conditionMessage(e); NULL })
     }
@@ -506,19 +525,21 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     status <- if (is.null(r$fit)) paste0("FIT FAILED (", r$fit_error, ")")
               else if (is.null(r$loo)) paste0("loo failed (", r$loo_error, ")")
               else "ok"
-    message("    ", r$delay_name, " / ", r$family_name, ": ", status)
+    message("    ", r$case_group, " / ", r$delay_name, " / ", r$family_name, ": ", status)
   }
 
-  # --- Phase 3 (sequential): write outputs + compare families per delay ---
+  # --- Phase 3 (sequential): write outputs + compare families per group x delay ---
   delay_distribution_summary_rows <- list()
-  by_delay <- split(results, vapply(results, function(r) r$delay_name, character(1)))
+  by_delay <- split(results, vapply(results, function(r) r$group_key, character(1)))
 
-  for (delay_name in names(by_delay)) {
-    delay_results <- Filter(function(r) !is.null(r$fit), by_delay[[delay_name]])
+  for (group_key in names(by_delay)) {
+    delay_results <- Filter(function(r) !is.null(r$fit), by_delay[[group_key]])
     if (!length(delay_results)) {
-      message("    All family fits failed for ", delay_name, " -- nothing to save.")
+      message("    All family fits failed for ", group_key, " -- nothing to save.")
       next
     }
+    case_group <- delay_results[[1]]$case_group
+    delay_name <- delay_results[[1]]$delay_name
     delay_dist_dir <- delay_results[[1]]$dir
 
     fits <- setNames(lapply(delay_results, `[[`, "fit"),
@@ -551,7 +572,7 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
         message("    loo_compare() failed: ", conditionMessage(e)); NULL })
       if (!is.null(comparison)) {
         best_family <- rownames(comparison)[1]
-        message("    Best fit by LOO for ", delay_name, ": ", best_family)
+        message("    Best fit by LOO for ", case_group, " / ", delay_name, ": ", best_family)
         writeLines(c(paste("Best family:", best_family), "",
                      utils::capture.output(print(comparison))),
                    file.path(delay_dist_dir, "loo_compare.txt"))
@@ -571,17 +592,18 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
         elpd_diff_lookup[rownames(comparison)] <- comparison[, "elpd_diff"]
         se_diff_lookup[rownames(comparison)] <- comparison[, "se_diff"]
       }
-      delay_distribution_summary_rows[[delay_name]] <- fmdf |>
+      delay_distribution_summary_rows[[group_key]] <- fmdf |>
         dplyr::mutate(
+          case_group = case_group,
           delay = delay_name,
-          n_eligible = nrow(eligible_by_delay[[delay_name]]),
+          n_eligible = nrow(eligible_by_delay[[group_key]]),
           is_best = family == best_family,
           elpd_diff = elpd_diff_lookup[family],
           se_diff = se_diff_lookup[family]) |>
-        dplyr::relocate(delay, family, n_eligible, is_best, .before = 1) |>
+        dplyr::relocate(case_group, delay, family, n_eligible, is_best, .before = 1) |>
         dplyr::relocate(elpd_diff, se_diff, .after = looic)
     }
-    message("    Wrote ", delay_name, " outputs to ", delay_dist_dir)
+    message("    Wrote ", case_group, " / ", delay_name, " outputs to ", delay_dist_dir)
   }
 
   future::plan(future::sequential)

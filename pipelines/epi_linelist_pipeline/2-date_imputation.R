@@ -4,7 +4,9 @@
 #     1-fit_delay_distributions.R's onset_to_reporting_days_range_flag
 #   - For rows with a usable reporting_date, imputes a replacement onset date
 #     by drawing a random delay from the best-fit onset_to_reporting_days
-#     distribution (per delay_distribution_fit_summary.csv) and subtracting
+#     distribution for the configured case group (date_imputation.case_group,
+#     default "cases" = confirmed + probable; per
+#     delay_distribution_fit_summary.csv) and subtracting
 #     it from reporting_date -- a stochastic draw rather than a fixed
 #     point-estimate offset, so imputed onset dates don't all cluster at one
 #     constant gap behind reporting_date (which would distort an onset-date
@@ -48,6 +50,9 @@ DELAY_MAX_DAYS <- as.integer(cfg$nowcasting$delay$max_days)
 IMPUTATION_INTERVAL_WIDTH <- cfg$date_imputation$interval_width
 MAX_RESAMPLE_ATTEMPTS <- as.integer(cfg$date_imputation$max_resample_attempts)
 IMPUTATION_SEED <- as.integer(cfg$date_imputation$random_seed)
+# Which case group's fit (1-fit_delay_distributions.R case_groups) to impute from.
+IMPUTATION_CASE_GROUP <- cfg$date_imputation$case_group
+if (is.null(IMPUTATION_CASE_GROUP) || !nzchar(IMPUTATION_CASE_GROUP)) IMPUTATION_CASE_GROUP <- "cases"
 
 # outputs/<DATE>/ is the default destination for everything this pipeline
 # produces -- only the upstream-synced ctsafe linelist stays under data/<DATE>/.
@@ -115,7 +120,9 @@ message(
 message("")
 message("C. LOADING BEST-FIT ONSET-TO-REPORTING DISTRIBUTION")
 
-delay_dist_dir <- file.path(epi_outputs_dir, "delay_distributions", "onset_to_reporting_days")
+delay_dist_dir <- file.path(
+  epi_outputs_dir, "delay_distributions", IMPUTATION_CASE_GROUP, "onset_to_reporting_days"
+)
 fit_summary_csv <- file.path(epi_outputs_dir, "delay_distributions", "delay_distribution_fit_summary.csv")
 
 best_family <- NA_character_
@@ -125,11 +132,17 @@ if (!file.exists(fit_summary_csv)) {
   message("  Fit summary not found: ", fit_summary_csv, " -- run 1-fit_delay_distributions.R first. Skipping imputation.")
 } else {
   fit_summary <- read.csv(fit_summary_csv, stringsAsFactors = FALSE)
+  if (!"case_group" %in% names(fit_summary)) {
+    message("  Fit summary has no case_group column (written by an older 1-fit_delay_distributions.R) -- rerun step 1.")
+    fit_summary <- fit_summary[0, , drop = FALSE]
+  }
   best_rows <- fit_summary[
-    fit_summary$delay == "onset_to_reporting_days" & fit_summary$is_best %in% TRUE,
+    fit_summary$case_group == IMPUTATION_CASE_GROUP &
+      fit_summary$delay == "onset_to_reporting_days" & fit_summary$is_best %in% TRUE,
   ]
   if (!nrow(best_rows)) {
-    message("  No best-fit row for onset_to_reporting_days in ", fit_summary_csv, " -- skipping imputation.")
+    message("  No best-fit row for ", IMPUTATION_CASE_GROUP, " / onset_to_reporting_days in ",
+            fit_summary_csv, " -- skipping imputation.")
   } else {
     if (nrow(best_rows) > 1) {
       message(
@@ -151,7 +164,7 @@ if (!file.exists(fit_summary_csv)) {
         best_family <- NA_character_
       } else {
         message(
-          "  Using ", best_family, " fit for onset_to_reporting_days (mu=",
+          "  Using ", IMPUTATION_CASE_GROUP, " ", best_family, " fit for onset_to_reporting_days (mu=",
           round(family_params$mu, 3), ", disp=", round(family_params$disp, 3), ")"
         )
       }
