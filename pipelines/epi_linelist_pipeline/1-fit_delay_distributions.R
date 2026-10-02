@@ -245,6 +245,10 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     onset_to_hospitalisation_end_days = "date_of_hospitalisation_end"
   )
   onset_delay_targets <- onset_delay_targets[intersect(names(onset_delay_targets), delay_cols)]
+  # Drop targets whose source date column is absent from this sync: the delay
+  # column itself still exists (as all-NA, see section B), but the fit and the
+  # first_seen check below reference the source date column directly.
+  onset_delay_targets <- Filter(function(col) col %in% names(df), onset_delay_targets)
 
   # family = family object to fit under the same mu ~ 1 marginal model.
   # lognormal/weibull are brms-specific families; plain Gamma isn't
