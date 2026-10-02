@@ -71,7 +71,7 @@ Step 4 depends on step 3's output files existing on disk (`status_aggregated.csv
 
 `BDBV2026-Processed_Sensitive_Data`'s `.github/workflows/run-processing-code-pipeline.yml` runs **steps 1-4 only** automatically, on every push there that adds a new `data/*/dhis2_processed_linelist_ctsafe.csv` (i.e. every ctsafe sync from `BDBV2026-Linelist_Processing`). It checks out this repo, sets `BDBV_DATA_ROOT` explicitly (since CI checkouts aren't literal sibling folders), runs steps 1-4, and commits the results back to the data repo. Steps 5-7 (residence mapping, residence-vs-alert reporting, nowcasting prep) are deliberately not part of this automatic run yet -- run them manually as above, or extend the workflow's "Run pipeline steps 1-4" step if/when that changes.
 
-The same workflow can also be triggered manually (Actions -> "Run Processing_Code pipeline" -> Run workflow) with an optional `pipeline_date` input, which sets `EPI_PIPELINE_DATE` for that run -- leave it blank to use the latest synced date, as usual.
+The same workflow can also be triggered manually (Actions -> "Run Processing_Code pipeline" -> Run workflow) with an optional `pipeline_date` input, which sets `EPI_PIPELINE_DATE` for that run -- leave it blank to use the latest synced date, as usual. A `skip_not_a_case_delay_fit` checkbox sets `SKIP_NOT_A_CASE_DELAY_FIT=true`, which skips the `not_a_case` delay distribution fits in step 1 for a faster run (the `cases` fits used for date imputation still run).
 
 Step 4 also writes a single stable `outputs/manifest.json` (overwritten every run with that run's date and dashboard-plot file locations) -- that file changing is what triggers `trigger-dashboard-rebuild.yml`, which in turn notifies `BDBV2026-Epidemic_Dashboard` to rebuild.
 

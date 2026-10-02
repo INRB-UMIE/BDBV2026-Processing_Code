@@ -436,6 +436,19 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     stop("pipeline_configs.json delay_distribution_fit.case_groups is empty.", call. = FALSE)
   }
 
+  # Optional speed-up (e.g. workflow_dispatch input skip_not_a_case_delay_fit):
+  # SKIP_NOT_A_CASE_DELAY_FIT=true drops the not_a_case group's fits. Never
+  # drops the group 2-date_imputation.R imputes from.
+  if (tolower(Sys.getenv("SKIP_NOT_A_CASE_DELAY_FIT", "false")) %in% c("true", "1", "yes")) {
+    imputation_group <- cfg$date_imputation$case_group %||% "cases"
+    if (identical(imputation_group, "not_a_case")) {
+      message("  SKIP_NOT_A_CASE_DELAY_FIT ignored: not_a_case is the imputation case group.")
+    } else if ("not_a_case" %in% names(CASE_GROUPS)) {
+      CASE_GROUPS[["not_a_case"]] <- NULL
+      message("  SKIP_NOT_A_CASE_DELAY_FIT=true: skipping not_a_case delay distribution fits.")
+    }
+  }
+
   # --- Build the flat job list: one job per (case group) x (present delay) x (family) ---
   # Per-group/delay eligible sets are computed once here, keyed "<group>|<delay>".
   eligible_by_delay <- list()
