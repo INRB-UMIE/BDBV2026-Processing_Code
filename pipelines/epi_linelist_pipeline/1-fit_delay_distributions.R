@@ -526,7 +526,51 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
   }
 
   # --- Phase 1+2 (parallel): fit (or load cache) + parallel_loo per job ---
+  # Progress: each job reports when its fit / loo starts and finishes. Lines
+  # are appended to PROGRESS_LOG (always works -- `tail -f` it from another
+  # terminal) and also signalled as immediateConditions, which future relays
+  # to this console while the workers are still running (rather than only
+  # once all jobs have finished, as ordinary message() output from workers is).
+  PROGRESS_LOG <- file.path(
+    data_root, "outputs", basename(target_epi_dirs), "delay_distributions",
+    "fit_progress.log"
+  )
+  dir.create(dirname(PROGRESS_LOG), recursive = TRUE, showWarnings = FALSE)
+  cat("---- step 1 fit run started ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      " (", length(jobs), " jobs, ", FIT_WORKERS, " workers) ----\n",
+      file = PROGRESS_LOG, append = TRUE, sep = "")
+  message("  Fitting ", length(jobs), " model(s); live progress also in: ", PROGRESS_LOG)
+
+  progress_log <- function(...) {
+    line <- paste0(format(Sys.time(), "%H:%M:%S"), "  ", paste0(...))
+    try(cat(line, "\n", file = PROGRESS_LOG, append = TRUE, sep = ""), silent = TRUE)
+    cond <- structure(
+      class = c("immediateCondition", "message", "condition"),
+      list(message = paste0("    ", line, "\n"), call = NULL)
+    )
+    message(cond)
+  }
+
+  # Save each fit / loo as soon as it's computed (not only after every job has
+  # finished), so an interrupted run keeps what it finished and the next run
+  # resumes via load_cached_rds(). Written to a temp file then renamed, so an
+  # interruption mid-write can't leave a truncated .rds that looks complete.
+  save_rds_atomic <- function(object, path) {
+    tmp <- paste0(path, ".tmp-", Sys.getpid())
+    saveRDS(object, tmp)
+    if (!file.rename(tmp, path)) {
+      unlink(tmp)
+      stop("could not move ", tmp, " to ", path)
+    }
+    invisible(path)
+  }
+
   future::plan(future::multisession, workers = FIT_WORKERS)
+
+  n_jobs <- length(jobs)
+  for (i in seq_along(jobs)) jobs[[i]]$label <- paste0(
+    "[", i, "/", n_jobs, "] ", jobs[[i]]$case_group, " / ",
+    jobs[[i]]$delay_name, " / ", jobs[[i]]$family_name)
 
   compute_job <- function(job) {
     cmdstan_dir <- Sys.getenv("CMDSTAN")
@@ -535,7 +579,11 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     fit_path <- file.path(job$dir, paste0(job$family_name, "_fit.rds"))
     fit <- load_cached_rds(fit_path, "fit")
     fit_error <- NA_character_
-    if (is.null(fit)) {
+    if (!is.null(fit)) {
+      progress_log(job$label, ": fit loaded from saved file")
+    } else {
+      t0 <- Sys.time()
+      progress_log(job$label, ": fitting...")
       fit <- tryCatch(
         fit_one_family(
           eligible_by_delay[[job$group_key]], job$sdate_col,
@@ -543,6 +591,14 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
           seed = epidist_fit_seed(job$group_key, job$family_name)
         ),
         error = function(e) { fit_error <<- conditionMessage(e); NULL })
+      mins <- round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1)
+      if (is.null(fit)) {
+        progress_log(job$label, ": FIT FAILED after ", mins, " min (", fit_error, ")")
+      } else {
+        progress_log(job$label, ": fit done in ", mins, " min")
+        tryCatch(save_rds_atomic(fit, fit_path), error = function(e)
+          progress_log(job$label, ": could not save fit (", conditionMessage(e), ")"))
+      }
     }
     if (is.null(fit))
       return(c(job, list(fit = NULL, loo = NULL, fit_error = fit_error, loo_error = NA_character_)))
@@ -550,9 +606,21 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     loo_path <- file.path(job$dir, paste0(job$family_name, "_loo.rds"))
     loo_res <- load_cached_rds(loo_path, "loo")
     loo_error <- NA_character_
-    if (is.null(loo_res)) {
+    if (!is.null(loo_res)) {
+      progress_log(job$label, ": loo loaded from saved file")
+    } else {
+      t0 <- Sys.time()
+      progress_log(job$label, ": computing loo...")
       loo_res <- tryCatch(parallel_loo(fit, cores = LOO_CORES),
         error = function(e) { loo_error <<- conditionMessage(e); NULL })
+      mins <- round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1)
+      if (is.null(loo_res)) {
+        progress_log(job$label, ": loo FAILED after ", mins, " min (", loo_error, ")")
+      } else {
+        progress_log(job$label, ": loo done in ", mins, " min")
+        tryCatch(save_rds_atomic(loo_res, loo_path), error = function(e)
+          progress_log(job$label, ": could not save loo (", conditionMessage(e), ")"))
+      }
     }
     c(job, list(fit = fit, loo = loo_res, fit_error = fit_error, loo_error = loo_error))
   }
@@ -561,7 +629,10 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     .options = furrr::furrr_options(seed = TRUE,
       globals = c("eligible_by_delay", "delay_fit_families", "LOO_CORES",
                   "fit_one_family", "parallel_loo", "epidist_fit_seed",
-                  "load_cached_rds", "FIT_CHAINS", "FIT_CORES")))
+                  "load_cached_rds", "FIT_CHAINS", "FIT_CORES",
+                  "progress_log", "save_rds_atomic", "PROGRESS_LOG")))
+  cat("---- step 1 fit run finished ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " ----\n",
+      file = PROGRESS_LOG, append = TRUE, sep = "")
 
   message("  Fit/loo outcomes:")
   for (r in results) {
@@ -591,7 +662,10 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
                      vapply(delay_results, `[[`, character(1), "family_name"))
 
     for (family_name in names(fits)) {
-      saveRDS(fits[[family_name]], file.path(delay_dist_dir, paste0(family_name, "_fit.rds")))
+      # Normally already saved by the worker as soon as the fit finished;
+      # only (re)write here if that save failed.
+      fit_rds <- file.path(delay_dist_dir, paste0(family_name, "_fit.rds"))
+      if (!file.exists(fit_rds)) saveRDS(fits[[family_name]], fit_rds)
       # posterior::summarise_draws instead of print(summary(fit)): brms::summary
       # reloads rstan via S4 dispatch and fails on worker-created fits. Wrapped so
       # a diagnostic-write failure never aborts the batch.
@@ -603,8 +677,9 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
       pp <- tryCatch(brms::pp_check(fits[[family_name]], ndraws = 100), error = function(e) NULL)
       if (!is.null(pp)) ggplot2::ggsave(
         file.path(delay_dist_dir, paste0(family_name, "_pp_check.png")), pp, width = 7, height = 5)
-      if (!is.null(loos[[family_name]]))
-        saveRDS(loos[[family_name]], file.path(delay_dist_dir, paste0(family_name, "_loo.rds")))
+      loo_rds <- file.path(delay_dist_dir, paste0(family_name, "_loo.rds"))
+      if (!is.null(loos[[family_name]]) && !file.exists(loo_rds))
+        saveRDS(loos[[family_name]], loo_rds)
     }
 
     best_family <- NA_character_
