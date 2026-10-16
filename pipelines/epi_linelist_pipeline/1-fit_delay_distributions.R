@@ -5,7 +5,7 @@
 #     sample collection, notification, reporting, investigation, hospitalisation)
 #   - Flags delays outside the plausible [min_days, max_days] window from
 #     pipeline_configs.json (nowcasting.delay) -- informational only for now
-#   - Fits lognormal/weibull/gamma delay distributions (epidist/primarycensored/
+#   - Fits lognormal/gamma delay distributions (epidist/primarycensored/
 #     cmdstanr) for every onset-anchored delay, separately per case group
 #     (pipeline_configs.json delay_distribution_fit.case_groups -- e.g. cases =
 #     confirmed + probable vs not_a_case), and records which family fits best
@@ -196,7 +196,7 @@ purrr::pwalk(delay_summary_exclude_pre_june14, function(delay, n_observed, n_out
 # Ported from an earlier interactive exploration (found in
 # BDBV2026-Secure_Raw_Data/.Rhistory, never previously saved as a script), then
 # generalised: for every delay column anchored on date_of_symptom_onset, fit
-# three candidate families (lognormal, weibull, gamma) via epidist/
+# two candidate families (lognormal, gamma; weibull dropped Oct 2026) via epidist/
 # primarycensored (properly accounting for interval censoring), using brms +
 # cmdstanr as the Stan backend, then compare the three with LOO
 # (loo::loo_compare) and record which family fits best.
@@ -204,7 +204,7 @@ purrr::pwalk(delay_summary_exclude_pre_june14, function(delay, n_observed, n_out
 # Scope: onset-anchored delays only (not notification_to_sample_days or
 # hospitalisation_start_to_end_days, which don't start from onset) -- a
 # deliberate choice to bound compute cost (each delay x family is a full Stan
-# fit: up to 6 delays x 3 families = 18 fits/run, fewer while the
+# fit: up to 6 delays x 2 families = 12 fits/run per case group, fewer while the
 # hospitalisation columns stay absent from the sync).
 #
 # NOTE: this is a genuinely heavy step (Stan compilation + 4-chain MCMC per
@@ -212,7 +212,7 @@ purrr::pwalk(delay_summary_exclude_pre_june14, function(delay, n_observed, n_out
 # is an escape hatch so it can be disabled per-environment (e.g. locally, or
 # until CI has the Stan toolchain wired up) without touching this script.
 message("")
-message("C. FITTING DELAY DISTRIBUTIONS (lognormal / weibull / gamma, per onset-anchored delay)")
+message("C. FITTING DELAY DISTRIBUTIONS (lognormal / gamma, per onset-anchored delay)")
 
 FIT_DELAY_DISTRIBUTIONS <- toupper(Sys.getenv("FIT_DELAY_DISTRIBUTIONS", "TRUE")) != "FALSE"
 
@@ -257,9 +257,15 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
   # threw "'Gamma' is not an exported object from 'namespace:brms'").
   # Gamma needs an explicit log link so its location parameter is comparable
   # to lognormal/weibull's (both naturally log-scale).
+  #
+  # Weibull is no longer fitted (Oct 2026): across 38 runs (2026-07-15 to
+  # 2026-10-12) it failed to converge 12 times (Rhat ~1.6-3.5, bulk ESS < 10),
+  # and those stuck fits are what made step 1 run for hours. It never won for
+  # onset_to_reporting_days (the delay 2-date_imputation.R uses -- gamma always
+  # did), and where it won elsewhere gamma was near-identical (means within
+  # ~0.05 days). To bring it back, re-add: weibull = brms::weibull()
   delay_fit_families <- list(
     lognormal = brms::lognormal(),
-    weibull = brms::weibull(),
     gamma = stats::Gamma(link = "log")
   )
 
@@ -422,8 +428,14 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     )
   }
 
-  FIT_WORKERS <- as.integer(cfg$delay_distribution_fit$fit_workers %||% 12)
-  if (is.na(FIT_WORKERS) || FIT_WORKERS < 1L) FIT_WORKERS <- 1L  # guard bad config before future::plan()
+  # Parallel fit workers: each runs FIT_CHAINS chains on FIT_CORES cores, so
+  # only N_CORES_AVAILABLE %/% FIT_CORES workers fit on the machine without
+  # oversubscribing the CPU. pipeline_configs.json fit_workers is an upper cap.
+  FIT_WORKERS_CAP <- suppressWarnings(as.integer(cfg$delay_distribution_fit$fit_workers %||% 12))
+  if (is.na(FIT_WORKERS_CAP) || FIT_WORKERS_CAP < 1L) FIT_WORKERS_CAP <- 1L  # guard bad config
+  FIT_WORKERS <- max(1L, min(FIT_WORKERS_CAP, N_CORES_AVAILABLE %/% FIT_CORES))
+  message("  Using ", FIT_WORKERS, " parallel fit worker(s) x ", FIT_CORES,
+          " core(s) each (", N_CORES_AVAILABLE, " cores available)")
   LOO_CORES   <- max(1L, N_CORES_AVAILABLE %/% FIT_WORKERS)
 
   # Case groups (pipeline_configs.json delay_distribution_fit.case_groups):
@@ -436,16 +448,19 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
     stop("pipeline_configs.json delay_distribution_fit.case_groups is empty.", call. = FALSE)
   }
 
-  # Optional speed-up (e.g. workflow_dispatch input skip_not_a_case_delay_fit):
-  # SKIP_NOT_A_CASE_DELAY_FIT=true drops the not_a_case group's fits. Never
-  # drops the group 2-date_imputation.R imputes from.
-  if (tolower(Sys.getenv("SKIP_NOT_A_CASE_DELAY_FIT", "false")) %in% c("true", "1", "yes")) {
+  # The not_a_case group's fits are SKIPPED BY DEFAULT (speed-up -- they aren't
+  # used for date imputation). Set SKIP_NOT_A_CASE_DELAY_FIT=false to fit them
+  # (e.g. untick the workflow_dispatch checkbox skip_not_a_case_delay_fit).
+  # Unset or empty (as on a CI push trigger) means skip. Never drops the group
+  # 2-date_imputation.R imputes from.
+  skip_not_a_case_env <- tolower(trimws(Sys.getenv("SKIP_NOT_A_CASE_DELAY_FIT", "")))
+  if (!skip_not_a_case_env %in% c("false", "0", "no")) {
     imputation_group <- cfg$date_imputation$case_group %||% "cases"
     if (identical(imputation_group, "not_a_case")) {
       message("  SKIP_NOT_A_CASE_DELAY_FIT ignored: not_a_case is the imputation case group.")
     } else if ("not_a_case" %in% names(CASE_GROUPS)) {
       CASE_GROUPS[["not_a_case"]] <- NULL
-      message("  SKIP_NOT_A_CASE_DELAY_FIT=true: skipping not_a_case delay distribution fits.")
+      message("  Skipping not_a_case delay distribution fits (default; set SKIP_NOT_A_CASE_DELAY_FIT=false to fit them).")
     }
   }
 
@@ -467,6 +482,17 @@ if (!FIT_DELAY_DISTRIBUTIONS) {
       dplyr::filter(final_mve_case_classification %in% CASE_GROUPS[[case_group]]) |>
       dplyr::filter(date_of_symptom_onset > ONSET_FIT_CUTOFF, date_of_symptom_onset < Sys.Date()) |>
       dplyr::filter(!is.na(.data[[delay_name]]), .data[[delay_name]] >= 0)
+
+    # Drop implausibly long delays (> nowcasting.delay.max_days in
+    # pipeline_configs.json, currently 60) before fitting: the long tail of
+    # likely data-entry errors made some fits (e.g. weibull) fail to converge
+    # and run for hours.
+    n_too_long <- sum(eligible[[delay_name]] > DELAY_MAX_DAYS)
+    eligible <- dplyr::filter(eligible, .data[[delay_name]] <= DELAY_MAX_DAYS)
+    if (n_too_long > 0) {
+      message("    ", case_group, " / ", delay_name, ": excluded ", n_too_long,
+              " rows with delay > ", DELAY_MAX_DAYS, " days from the fit")
+    }
 
     if ("first_seen_date" %in% names(eligible)) {
       suspicious <- eligible |>

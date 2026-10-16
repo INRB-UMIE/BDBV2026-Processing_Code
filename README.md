@@ -18,7 +18,7 @@ pipelines/
 ├── 0-setup.R                       # resolves code_root (this repo) and data_root (the data repo), loads packages/config
 ├── pipeline_configs.json
 └── epi_linelist_pipeline/
-    ├── 1-fit_delay_distributions.R # delay intervals + lognormal/weibull/gamma distribution fits (epidist/cmdstanr)
+    ├── 1-fit_delay_distributions.R # delay intervals + lognormal/gamma distribution fits (epidist/cmdstanr)
     ├── 2-date_imputation.R         # imputes missing/out-of-range onset dates by sampling step 1's best-fit delay distribution
     ├── 3-aggregate-linelist.R      # status + rolling positivity aggregation (national/province/health-zone), lab positivity table
     ├── 4-make-dashboard-plots.R    # ggplot2 SVGs + outputs/manifest.json (see "Automatic runs (CI)" below)
@@ -83,7 +83,9 @@ Where duplicate records disagree, all distinct values are kept, sorted and joine
 
 `BDBV2026-Processed_Sensitive_Data`'s `.github/workflows/run-processing-code-pipeline.yml` runs **steps 1-4 only** automatically, on every push there that adds a new `data/*/dhis2_processed_linelist_ctsafe.csv` (i.e. every ctsafe sync from `BDBV2026-Linelist_Processing`). It checks out this repo, sets `BDBV_DATA_ROOT` explicitly (since CI checkouts aren't literal sibling folders), runs steps 1-4, and commits the results back to the data repo. Steps 5-7 (residence mapping, residence-vs-alert reporting, nowcasting prep) are deliberately not part of this automatic run yet -- run them manually as above, or extend the workflow's "Run pipeline steps 1-4" step if/when that changes.
 
-The same workflow can also be triggered manually (Actions -> "Run Processing_Code pipeline" -> Run workflow) with an optional `pipeline_date` input, which sets `EPI_PIPELINE_DATE` for that run -- leave it blank to use the latest synced date, as usual. A `skip_not_a_case_delay_fit` checkbox sets `SKIP_NOT_A_CASE_DELAY_FIT=true`, which skips the `not_a_case` delay distribution fits in step 1 for a faster run (the `cases` fits used for date imputation still run).
+The same workflow can also be triggered manually (Actions -> "Run Processing_Code pipeline" -> Run workflow) with an optional `pipeline_date` input, which sets `EPI_PIPELINE_DATE` for that run -- leave it blank to use the latest synced date, as usual. The `not_a_case` delay distribution fits in step 1 are **skipped by default** (on push-triggered runs and local runs alike) for speed; the `cases` fits used for date imputation always run. To fit `not_a_case` too, set `SKIP_NOT_A_CASE_DELAY_FIT=false` locally, or untick the `skip_not_a_case_delay_fit` checkbox on a manual run.
+
+Step 1 also excludes delays longer than `nowcasting.delay.max_days` (60 days) from the fits, and sets the number of parallel fit workers from the machine's core count (`delay_distribution_fit.fit_workers` in `pipeline_configs.json` is only an upper cap; `N_CORES_OVERRIDE` overrides the detected core count).
 
 Step 4 also writes a single stable `outputs/manifest.json` (overwritten every run with that run's date and dashboard-plot file locations) -- that file changing is what triggers `trigger-dashboard-rebuild.yml`, which in turn notifies `BDBV2026-Epidemic_Dashboard` to rebuild.
 
