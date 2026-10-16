@@ -3,16 +3,17 @@
 #   - Reads dhis2_linelist_with_imputed_onset.csv (2-date_imputation.R's output)
 #   - Writes status_aggregated.csv: daily case-status counts (blank/
 #     confirmed_case/not_a_case/probable_case/suspected_case), at national,
-#     province, and health-zone spatial scales (one long table, a
-#     "spatial_scale" column plus NA placeholders distinguish the scales)
+#     province, health-zone and health-area spatial scales (one long table, a
+#     "spatial_scale" column plus NA placeholders distinguish the scales;
+#     health-area rows also carry health_zone, as area names repeat across zones)
 #   - Writes status_aggregated_positives_only.csv: same table with only
 #     confirmed_case counts (non-positive classifications dropped)
 #   - Writes cumulative_positive_deaths.csv: daily and cumulative counts of
 #     confirmed death alerts (type_of_alert = death,
 #     final_mve_case_classification = confirmed_case) by reporting_date, at the
-#     same three spatial scales
+#     same four spatial scales
 #   - Writes rolling_positivity.csv: 5-day rolling test positivity (Wilson CI),
-#     at the same three spatial scales, when lab_analysis_date is present in
+#     at the same four spatial scales, when lab_analysis_date is present in
 #     this sync -- else an empty placeholder
 #   - Writes lab_positivity_aggregated.csv: the same Wilson-CI + 5-day-rolling
 #     positivity, but by lab and on lab_analysis_date rather than onset date
@@ -96,7 +97,20 @@ healthzone_status <- linelist_status_base |>
   dplyr::mutate(dplyr::across(dplyr::any_of(classification_cols), ~ tidyr::replace_na(.x, 0))) |>
   dplyr::mutate(spatial_scale = "healthzone", province = NA_character_)
 
-dhis2_linelist_aggregated_status <- dplyr::bind_rows(national_status, province_status, healthzone_status) |>
+# Health area names are not unique nationally (the same name can appear in
+# more than one health zone), so health_zone is kept alongside health_area to
+# disambiguate. Other scales get health_area = NA via bind_rows().
+healtharea_status <- linelist_status_base |>
+  dplyr::group_by(country, health_zone, health_area, date_of_symptom_onset_imputed, onset_date_was_imputed, final_mve_case_classification) |>
+  dplyr::mutate(n = n()) |>
+  dplyr::select(country, health_zone, health_area, date_of_symptom_onset_imputed, onset_date_was_imputed, final_mve_case_classification, n) |>
+  dplyr::distinct() |>
+  dplyr::ungroup() |>
+  tidyr::pivot_wider(names_from = final_mve_case_classification, values_from = n) |>
+  dplyr::mutate(dplyr::across(dplyr::any_of(classification_cols), ~ tidyr::replace_na(.x, 0))) |>
+  dplyr::mutate(spatial_scale = "healtharea", province = NA_character_)
+
+dhis2_linelist_aggregated_status <- dplyr::bind_rows(national_status, province_status, healthzone_status, healtharea_status) |>
   dplyr::arrange(date_of_symptom_onset_imputed)
 
 status_aggregated_csv <- file.path(epi_outputs_dir, "status_aggregated.csv")
@@ -182,8 +196,17 @@ healthzone_deaths <- deaths_base |>
   dplyr::ungroup() |>
   dplyr::mutate(spatial_scale = "healthzone", province = NA_character_)
 
+healtharea_deaths <- deaths_base |>
+  dplyr::group_by(country, health_zone, health_area, reporting_date) |>
+  dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
+  dplyr::arrange(health_zone, health_area, reporting_date) |>
+  dplyr::group_by(health_zone, health_area) |>
+  dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(spatial_scale = "healtharea", province = NA_character_)
+
 dhis2_linelist_cumulative_positive_deaths <- dplyr::bind_rows(
-  national_deaths, province_deaths, healthzone_deaths
+  national_deaths, province_deaths, healthzone_deaths, healtharea_deaths
 ) |>
   dplyr::arrange(reporting_date)
 
@@ -269,6 +292,28 @@ if ("lab_analysis_date" %in% names(processed_dhis2_linelist)) {
                   daily_positivity_upper = binom.confint(x = confirmed_case, n = total_samples_analysed_daily, methods = "wilson")$upper) |>
     dplyr::mutate(spatial_scale = "healthzone", province = NA_character_)
 
+  # Same >10-sample threshold as the other scales, applied per (health_zone,
+  # health_area) since health area names aren't unique across zones.
+  healtharea_positivity <- positivity_base |>
+    dplyr::group_by(health_zone, health_area) |>
+    dplyr::mutate(total_samples_analysed = n()) |>
+    dplyr::filter(total_samples_analysed > 10) |>
+    dplyr::mutate(earliest_analysed_sample = min(na.omit(lab_analysis_date))) |>
+    dplyr::group_by(health_zone, health_area, date_of_symptom_onset_imputed) |>
+    dplyr::mutate(total_samples_analysed_daily = n()) |>
+    dplyr::group_by(health_zone, health_area, date_of_symptom_onset_imputed, final_mve_case_classification) |>
+    dplyr::mutate(num = n()) |>
+    dplyr::select(health_zone, health_area, date_of_symptom_onset_imputed, earliest_analysed_sample, total_samples_analysed, total_samples_analysed_daily, final_mve_case_classification, num) |>
+    dplyr::distinct() |>
+    dplyr::filter(!health_area == "") |>
+    tidyr::pivot_wider(names_from = final_mve_case_classification, values_from = num) |>
+    dplyr::mutate(across(everything(), ~ replace_na(., 0))) |>
+    dplyr::ungroup() |>
+    dplyr::mutate(daily_positivity_mean = binom.confint(x = confirmed_case, n = total_samples_analysed_daily, methods = "wilson")$mean,
+                  daily_positivity_lower = binom.confint(x = confirmed_case, n = total_samples_analysed_daily, methods = "wilson")$lower,
+                  daily_positivity_upper = binom.confint(x = confirmed_case, n = total_samples_analysed_daily, methods = "wilson")$upper) |>
+    dplyr::mutate(spatial_scale = "healtharea", province = NA_character_)
+
   # 5 day rolling, per scale
   national_positivity_5day <- national_positivity |>
     dplyr::select(country, date_of_symptom_onset_imputed, confirmed_case, total_samples_analysed_daily, spatial_scale, province, health_zone) |>
@@ -340,7 +385,31 @@ if ("lab_analysis_date" %in% names(processed_dhis2_linelist)) {
     ) |>
     dplyr::ungroup()
 
-  dhis2_linelist_positivity_aggregated <- dplyr::bind_rows(national_positivity_5day, province_positivity_5day, healthzone_positivity_5day) |>
+  healtharea_positivity_5day <- healtharea_positivity |>
+    dplyr::select(health_zone, health_area, date_of_symptom_onset_imputed, confirmed_case, total_samples_analysed_daily, spatial_scale, province) |>
+    dplyr::mutate(date_of_symptom_onset_imputed = as.Date(date_of_symptom_onset_imputed)) |>
+    dplyr::filter(!is.na(date_of_symptom_onset_imputed)) |>
+    dplyr::arrange(health_zone, health_area, date_of_symptom_onset_imputed) |>
+    dplyr::group_by(health_zone, health_area) |>
+    dplyr::mutate(
+      rolling_confirmed = slider::slide_index_sum(
+        confirmed_case, date_of_symptom_onset_imputed,
+        before = 4L, after = 0L
+      ),
+      rolling_total = slider::slide_index_sum(
+        total_samples_analysed_daily, date_of_symptom_onset_imputed,
+        before = 4L, after = 0L
+      )
+    ) |>
+    dplyr::filter(rolling_total > 0) |>
+    dplyr::mutate(
+      daily_positivity_mean  = binom.confint(x = rolling_confirmed, n = rolling_total, methods = "wilson")$mean,
+      daily_positivity_lower = binom.confint(x = rolling_confirmed, n = rolling_total, methods = "wilson")$lower,
+      daily_positivity_upper = binom.confint(x = rolling_confirmed, n = rolling_total, methods = "wilson")$upper
+    ) |>
+    dplyr::ungroup()
+
+  dhis2_linelist_positivity_aggregated <- dplyr::bind_rows(national_positivity_5day, province_positivity_5day, healthzone_positivity_5day, healtharea_positivity_5day) |>
     dplyr::arrange(spatial_scale, date_of_symptom_onset_imputed)
 
   positivity_aggregated_csv <- file.path(epi_outputs_dir, "rolling_positivity.csv")
