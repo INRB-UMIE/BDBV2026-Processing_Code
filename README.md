@@ -67,6 +67,18 @@ Each script resolves the latest synced `data/YYYY-MM-DD/dhis2_processed_linelist
 
 Step 4 depends on step 3's output files existing on disk (`status_aggregated.csv`, `rolling_positivity.csv`, `lab_positivity_aggregated.csv`), and step 7 depends on step 1's (`delay_distributions/dhis2_linelist_with_delays.csv`), so run them in that order. Steps 5-7 currently have to be run manually (see "Automatic runs (CI)" below) -- note step 7 (nowcasting prep) itself runs after steps 4-6 rather than before, so those steps fall back to a static config default rather than step 7's freshly-computed run metadata when its output isn't there yet; if that ever matters, step 7 may need to move earlier instead.
 
+## Contact tracing pipeline
+
+`pipelines/contact_tracing_pipeline/` (manual only, not run by CI). Uses the latest `data/YYYY-MM-DD/` folder that has both `contact_tracing_combined_ctsafe.csv` and the ctsafe linelist; pin a date with `CT_PIPELINE_DATE`. Outputs go to `outputs/YYYY-MM-DD/contact_tracing/`.
+
+```bash
+Rscript pipelines/contact_tracing_pipeline/1-make-infector-infectee-pairs.R  # one row per infector-infectee pair + DQ issues log
+Rscript pipelines/contact_tracing_pipeline/2-pairs-summary-table.R           # counts: pairs by linelist presence, conflicts
+Rscript pipelines/contact_tracing_pipeline/3-pairs-plots.R                  # ggplot2 SVGs + PNGs in outputs/YYYY-MM-DD/contact_tracing/plots/
+```
+
+Where duplicate records disagree, all distinct values are kept, sorted and joined with `/`. Imputed onset dates are filled only if the epi pipeline's step 2 has run for the same date.
+
 ## Automatic runs (CI)
 
 `BDBV2026-Processed_Sensitive_Data`'s `.github/workflows/run-processing-code-pipeline.yml` runs **steps 1-4 only** automatically, on every push there that adds a new `data/*/dhis2_processed_linelist_ctsafe.csv` (i.e. every ctsafe sync from `BDBV2026-Linelist_Processing`). It checks out this repo, sets `BDBV_DATA_ROOT` explicitly (since CI checkouts aren't literal sibling folders), runs steps 1-4, and commits the results back to the data repo. Steps 5-7 (residence mapping, residence-vs-alert reporting, nowcasting prep) are deliberately not part of this automatic run yet -- run them manually as above, or extend the workflow's "Run pipeline steps 1-4" step if/when that changes.

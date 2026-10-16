@@ -25,6 +25,7 @@ req_pkgs <- c(
   "lubridate", "ggplot2", "sf", "readxl", "pammtools", "HDInterval",
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
   "brms", "bayesplot", "loo", "posterior", "svglite", "future", "furrr",
+  "patchwork", # multipanel plots in contact_tracing_pipeline/3-pairs-plots.R
   "rmarkdown", # 8-summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
   "rsvg",     # rasterizing dashboard SVGs for PDF embedding in 8-summary-report.Rmd
   "tinytex"   # LaTeX engine rmarkdown needs to knit 8-summary-report.Rmd to PDF
@@ -420,6 +421,62 @@ if (nzchar(epi_pipeline_date_override)) {
   message("EPI_PIPELINE_DATE override active -- using ", epi_latest_dir, " instead of the latest synced folder.")
 }
 
+#' Return the full path to the latest synced `data/YYYY-MM-DD` folder that
+#' contains BOTH the combined contact tracing file and the ctsafe linelist --
+#' the contact tracing pipeline needs the two from the same sync so person IDs
+#' line up. Only folders from 2026-10-03 onwards have the combined file (older
+#' ones have contact_tracing_processed_ctsafe.csv, which has no person IDs).
+#'
+#' Pin to a specific date with the CT_PIPELINE_DATE (YYYY-MM-DD) environment
+#' variable, the contact tracing equivalent of EPI_PIPELINE_DATE.
+resolve_ct_latest_dir <- function(ct_file = pipeline_configs$contact_tracing$data$files$contact_tracing,
+                                  linelist_file = pipeline_configs$contact_tracing$data$files$linelist) {
+  data_dir <- file.path(data_root, "data")
+  has_both <- function(d) {
+    file.exists(file.path(data_dir, d, ct_file)) &&
+      file.exists(file.path(data_dir, d, linelist_file))
+  }
+
+  override <- Sys.getenv("CT_PIPELINE_DATE", "")
+  if (nzchar(override)) {
+    if (!has_both(override)) {
+      stop("CT_PIPELINE_DATE is set to '", override, "' but data/", override,
+           " does not contain both ", ct_file, " and ", linelist_file, ".", call. = FALSE)
+    }
+    message("CT_PIPELINE_DATE override active -- using data/", override)
+    return(file.path(data_dir, override))
+  }
+
+  date_dirs <- list.dirs(data_dir, full.names = FALSE, recursive = FALSE)
+  dates <- vapply(date_dirs, parse_synced_date_dir, as.Date(NA))
+  valid <- !is.na(dates) & vapply(date_dirs, has_both, logical(1))
+  if (!any(valid)) {
+    stop("No synced date folder under ", data_dir, " contains both ", ct_file,
+         " and ", linelist_file, ".", call. = FALSE)
+  }
+  latest <- date_dirs[valid][which.max(dates[valid])]
+  file.path(data_dir, latest)
+}
+
+#' Collapse a vector to its distinct non-missing values, sorted and joined by
+#' "/" (e.g. c("male", NA, "female", "male") -> "female/male"). Returns NA if
+#' nothing is left. numeric = TRUE sorts numerically (so ages come out as
+#' "9/10", not "10/9"); ISO dates sort correctly as text. Used by the contact
+#' tracing pipeline to show discrepancies between duplicate records instead
+#' of silently picking one.
+collapse_values <- function(x, numeric = FALSE) {
+  x <- trimws(as.character(x))
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (!length(x)) return(NA_character_)
+  if (numeric) {
+    num <- suppressWarnings(as.numeric(x))
+    x <- x[order(is.na(num), num, x)]
+  } else {
+    x <- sort(x)
+  }
+  paste(x, collapse = "/")
+}
+
 #' Build a linelist_meta-shaped list (date, coded, label, basename) from a
 #' resolved `data/YYYY-MM-DD` folder, for scripts (e.g. step 6) that need a
 #' human-readable run label but have no raw workbook to parse a date from
@@ -718,6 +775,7 @@ keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "code_root", "data_root", "pipeline_configs",
                   "resolve_code_root", "resolve_data_root",
                   "resolve_epi_latest_dir", "epi_latest_dir", "parse_dhis2_linelist_date",
+                  "resolve_ct_latest_dir", "collapse_values",
                   "parse_synced_date_dir", "dhis2_force_stems",
                   "parse_linelist_date", "load_linelist_properly", "load_map_csv",
                   "load_lab_location_map",

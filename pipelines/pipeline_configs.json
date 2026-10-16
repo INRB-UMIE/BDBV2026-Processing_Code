@@ -108,5 +108,32 @@
       "max_resample_attempts": 20,
       "random_seed": 20260715
     }
+  },
+  "contact_tracing": {
+    "_comment": "Config for the contact tracing pipeline (pipelines/contact_tracing_pipeline/). Inputs are read from data/<DATE>/ (latest folder containing both files below, or CT_PIPELINE_DATE); outputs go to outputs/<DATE>/<outputs_subdir>/. Imputed onset dates are optional and come from the epi linelist pipeline's step 2 output for the same date, if it exists.",
+    "pipeline": {
+      "name": "contact_tracing_downstream",
+      "steps": {
+        "1_make_infector_infectee_pairs": "pipelines/contact_tracing_pipeline/1-make-infector-infectee-pairs.R",
+        "2_pairs_summary_table": "pipelines/contact_tracing_pipeline/2-pairs-summary-table.R",
+        "3_pairs_plots": "pipelines/contact_tracing_pipeline/3-pairs-plots.R"
+      }
+    },
+    "data": {
+      "files": {
+        "contact_tracing": "contact_tracing_combined_ctsafe.csv",
+        "linelist": "dhis2_processed_linelist_ctsafe.csv",
+        "linelist_with_imputed_onset": "dhis2_linelist_with_imputed_onset.csv"
+      },
+      "outputs_subdir": "contact_tracing",
+      "plots_subdir": "plots",
+      "output_files": {
+        "pairs": "infector_infectee_pairs.csv",
+        "dq_issues": "infector_infectee_dq_issues.csv",
+        "summary": "infector_infectee_summary.csv"
+      }
+    },
+    "_known_followup_results_comment": "Standard (mapped) followup_result values. Anything else is kept as-is in the pairs table but listed in the DQ issues file -- add it to assets/maps/followup_result_map.csv upstream to fix it at source.",
+    "known_followup_results": ["not_a_case", "contact_became_suspected_case", "case_validated", "case_confirmed", "recycled", "other_result"]
   }
 }
