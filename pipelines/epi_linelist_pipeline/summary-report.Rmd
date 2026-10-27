@@ -13,7 +13,7 @@ output:
 # button (see https://github.com/rstudio/rmarkdown/issues/1711). Non-
 # interactive callers (e.g. the CI workflow) must pull this function out of
 # the YAML front matter and call it directly -- see the "Render summary
-# report (step 8)" step in run-processing-code-pipeline.yml for that.
+# report" step in run-processing-code-pipeline.yml for that.
 #
 # This has to resolve data_root/the latest synced date *before*
 # rmarkdown::render() starts (render() needs output_dir up front), which
@@ -66,6 +66,9 @@ knit: |
     rmarkdown::render(
       input,
       output_dir = out_dir,
+      # Output keeps its historical "8-" prefix (the .Rmd itself is now
+      # unnumbered) so the evening digest workflow and day-to-day comparisons
+      # against older outputs/<DATE>/ folders keep finding it.
       output_file = "8-summary-report.pdf",
       envir = new.env(parent = globalenv()),
       ...
@@ -74,21 +77,24 @@ knit: |
 ---
 
 <!--
-Step 8: Summary report for the epi linelist pipeline.
+Summary report for the epi linelist pipeline (unnumbered -- it reads
+other steps' outputs rather than being a processing step itself; the PDF
+it writes is still named 8-summary-report.pdf, see the knit: field above).
 
 Covers steps 1-4 only (delay-distribution fitting, date imputation,
 aggregation/positivity, dashboard plots) -- the steps CI actually runs
-automatically today (run-processing-code-pipeline.yml). Steps 5-7 (residence
-mapping, residence-vs-alert reporting, nowcasting prep) are manual-only and
-not summarised here.
+automatically today (run-processing-code-pipeline.yml). Step 6 (reporting
+backfill) also runs in CI but isn't summarised here yet. Steps 5, 7 and 8
+(residence mapping, nowcasting prep, residence-vs-alert reporting) are
+manual-only and not summarised here.
 
 Wired into run-processing-code-pipeline.yml as its own step, right after
-steps 1-4 finish (see the "Render summary report (step 8)" step there).
+steps 1-4 finish (see the "Render summary report" step there).
 Can also still be rendered manually via RStudio's Knit button, which DOES
 honour the custom `knit:` field above -- that's what knits to PDF into this
 run's own outputs/<DATE>/ folder rather than next to this .Rmd (see that
 field's own comment for why it can't just source 0-setup.R directly).
-A plain `rmarkdown::render("pipelines/epi_linelist_pipeline/8-summary-report.Rmd")`
+A plain `rmarkdown::render("pipelines/epi_linelist_pipeline/summary-report.Rmd")`
 from a script or console, by contrast, does NOT honour the knit: field (it's
 an RStudio-Knit-button-only mechanism -- see
 https://github.com/rstudio/rmarkdown/issues/1711) and will silently fall
@@ -209,7 +215,7 @@ slugify <- function(name) {
 # rsvg, then embedded with knitr::include_graphics(). width_px is a fixed
 # pixel width (rsvg scales height to preserve aspect ratio); tuned for the
 # report's page width rather than the SVGs' own native size.
-plot_asset_dir <- file.path(tempdir(), "8-summary-report-assets")
+plot_asset_dir <- file.path(tempdir(), "summary-report-assets")
 dir.create(plot_asset_dir, recursive = TRUE, showWarnings = FALSE)
 
 svg_to_png <- function(svg_path, width_px = 1600) {

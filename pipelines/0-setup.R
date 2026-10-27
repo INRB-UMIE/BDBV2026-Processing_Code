@@ -26,9 +26,9 @@ req_pkgs <- c(
   "jsonlite", "binom", "slider", "fitdistrplus", "mgcv",
   "brms", "bayesplot", "loo", "posterior", "svglite", "future", "furrr",
   "patchwork", # multipanel plots in contact_tracing_pipeline/3-pairs-plots.R
-  "rmarkdown", # 8-summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
-  "rsvg",     # rasterizing dashboard SVGs for PDF embedding in 8-summary-report.Rmd
-  "tinytex"   # LaTeX engine rmarkdown needs to knit 8-summary-report.Rmd to PDF
+  "rmarkdown", # summary-report.Rmd (knitr comes along as rmarkdown's own dependency)
+  "rsvg",     # rasterizing dashboard SVGs for PDF embedding in summary-report.Rmd
+  "tinytex"   # LaTeX engine rmarkdown needs to knit summary-report.Rmd to PDF
 )
 
 for (p in req_pkgs) {
@@ -174,8 +174,8 @@ if (requireNamespace("cmdstanr", quietly = TRUE)) {
 # any PDF -- installing it here meant every one of those 4 Rscript
 # invocations retried a several-second network install on every single run,
 # only to fail every time in that environment and log a warning, for a
-# feature none of them use. Only 8-summary-report.Rmd (manual-only, not
-# wired into CI) actually needs the LaTeX distribution, so that on-demand
+# feature none of them use. Only summary-report.Rmd (rendered by its own
+# separate CI step, after the Rscript steps) actually needs the LaTeX distribution, so that on-demand
 # install now lives in its own setup chunk instead. See that file's setup
 # chunk for the actual install_tinytex() call.
 

@@ -1,5 +1,9 @@
 #!/usr/bin/env Rscript
-# Build HTML report for residence vs alert health-area maps.
+# Step 8: Build HTML report for residence vs alert health-area maps.
+#   - Normally sourced by 5-map-residence-health-areas.R (manual only, not
+#     run by CI), which calls write_residence_vs_alert_report() itself; can
+#     also be run standalone to rebuild the report from existing map PNGs.
+#   - Was step 6 until 6-reporting-backfill.R took that slot.
 
 # Self-contained bootstrap (mirrors resolve_code_root() in 0-setup.R), used
 # only by the standalone-execution block at the bottom of this file to locate

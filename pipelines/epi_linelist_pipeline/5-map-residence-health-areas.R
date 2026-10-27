@@ -448,7 +448,7 @@ linelist_label <- basename(epi_dir)   # e.g. "2026-07-14"
 # NOTE: in the upstream (Secure) script, linelist_meta was referenced here
 # (line ~466) without ever being assigned when this script runs via its
 # normal chain (only defined locally inside write_residence_vs_alert_report()
-# in step 6, and only when step 6 is run standalone). That looks like a
+# in step 8 (formerly step 6), and only when it is run standalone). That looks like a
 # pre-existing bug upstream — sourcing this script there would error on the
 # message() below. Fixed here by deriving it from the resolved date folder,
 # via the parse_dhis2_linelist_date() helper adapted in 0-setup.R.
@@ -494,7 +494,7 @@ results <- lapply(names(PROVINCES), function(prov_key) {
 })
 
 report_script <- file.path(
-  code_root, "pipelines", "epi_linelist_pipeline", "6-residence-vs-alert-report.R"
+  code_root, "pipelines", "epi_linelist_pipeline", "8-residence-vs-alert-report.R"
 )
 if (!file.exists(report_script)) {
   stop("Report script not found: ", report_script, call. = FALSE)

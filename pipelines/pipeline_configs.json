@@ -10,9 +10,10 @@
         "3_aggregate": "pipelines/epi_linelist_pipeline/3-aggregate-linelist.R",
         "4_dashboard_plots": "pipelines/epi_linelist_pipeline/4-make-dashboard-plots.R",
         "5_map_residence_health_areas": "pipelines/epi_linelist_pipeline/5-map-residence-health-areas.R",
-        "6_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/6-residence-vs-alert-report.R",
+        "6_reporting_backfill": "pipelines/epi_linelist_pipeline/6-reporting-backfill.R",
         "7_nowcasting_prep": "pipelines/epi_linelist_pipeline/7-nowcasting_prep.R",
-        "8_summary_report": "pipelines/epi_linelist_pipeline/8-summary-report.Rmd"
+        "8_residence_vs_alert_report": "pipelines/epi_linelist_pipeline/8-residence-vs-alert-report.R",
+        "summary_report": "pipelines/epi_linelist_pipeline/summary-report.Rmd"
       }
     },
     "data": {
@@ -107,6 +108,19 @@
       "interval_width": 0.95,
       "max_resample_attempts": 20,
       "random_seed": 20260715
+    },
+    "reporting_backfill": {
+      "_comment": "Config for 6-reporting-backfill.R. Compares status_aggregated.csv from every past outputs/<DATE>/ folder (up to and including this run's date) against this run's own, to estimate how complete each onset date's count is N days after onset (backfilling). This run's counts are treated as the reference ('eventual') counts, but only for onset dates at least settled_after_days old -- newer dates are still filling in themselves. Onset dates before onset_start are left out (early exports had a different onset-date data-quality profile; see delay_distribution_fit.onset_cutoff_start). min_reference_count drops onset dates with too few reference cases for a per-date ratio to mean much (they still count towards the pooled completeness). completeness_thresholds are the levels reported in backfill_summary.json as 'days until X% complete'. Plots are only drawn for national plus locations with at least min_location_cases_for_plot reference cases.",
+      "classifications": ["confirmed_case"],
+      "spatial_scales": ["national", "province"],
+      "onset_start": "2026-06-01",
+      "settled_after_days": 30,
+      "max_days_since_onset": 60,
+      "min_reference_count": 5,
+      "completeness_thresholds": [0.75, 0.9, 0.95],
+      "snapshot_spacing_days": 14,
+      "n_snapshots": 7,
+      "min_location_cases_for_plot": 100
     }
   },
   "contact_tracing": {
