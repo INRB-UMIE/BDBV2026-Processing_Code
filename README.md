@@ -23,7 +23,7 @@ pipelines/
     ├── 3-aggregate-linelist.R      # status + rolling positivity aggregation (national/province/health-zone), lab positivity table
     ├── 4-make-dashboard-plots.R    # ggplot2 SVGs + outputs/manifest.json (see "Automatic runs (CI)" below)
     ├── 5-map-residence-health-areas.R      # also sources 8- internally -- manual only, not run by CI (see below)
-    ├── 6-reporting-backfill.R              # how complete recent daily counts are, from past exports -- run by CI
+    ├── 6-reporting-backfill.R              # how complete recent daily counts are, from past exports; updates outputs/across_exports/ -- run by CI
     ├── 7-nowcasting_prep.R                 # manual only, not run by CI
     ├── 8-residence-vs-alert-report.R       # manual only, not run by CI (normally run via step 5)
     ├── summary-report.Rmd                  # PDF summary of steps 1-4 (writes 8-summary-report.pdf) -- run by CI

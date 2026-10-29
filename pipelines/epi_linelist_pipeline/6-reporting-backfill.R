@@ -10,17 +10,30 @@
 #   - For every earlier export, works out how many days had passed since each
 #     onset date ("days since onset" = export date - onset date) and what
 #     share of the reference count had already been reported by then
+#   - Updates the running file outputs/across_exports/
+#     status_aggregated_national_by_export.csv: every export's national
+#     status_aggregated.csv rows stacked with an export_date column (the epi
+#     curve as it looked in each export). This run's export_date rows are
+#     replaced, and any earlier dated folder not in the file yet is filled in,
+#     so reruns never duplicate rows and the first run seeds the whole history
 #   - Writes reporting_backfill/backfill_snapshots.csv: one row per export x
-#     onset date x location x classification (count then vs reference count)
+#     onset date x location x classification (count then vs reference count),
+#     for reporting_backfill.snapshot_csv_spatial_scales only (national +
+#     province by default -- health zones would make it very large)
 #   - Writes reporting_backfill/backfill_completeness_by_lag.csv: completeness
 #     by days since onset -- pooled (sum of counts / sum of reference counts)
-#     plus the median and 10th/90th percentile across individual onset dates
+#     plus the median and 10th/90th percentile across individual onset dates --
+#     at every reporting_backfill.spatial_scales level (national, province,
+#     health zone by default). Small health zones are noisy: check count /
+#     reference_count before trusting a percentage
 #   - Writes reporting_backfill/backfill_summary.json: days since onset until
 #     each reporting_backfill.completeness_thresholds level is reached
 #     (pooled), per location, alongside the current nowcasting.test_days
 #     window the dashboard shades as "reporting likely incomplete"
 #   - Renders two plots (SVG + PNG) per location under reporting_backfill/plots/:
-#     the epi curve as seen in successive exports, and the completeness curve
+#     the epi curve as seen in successive exports, and the completeness curve,
+#     for reporting_backfill.plot_spatial_scales only (national + any province
+#     with at least min_location_cases_for_plot reference cases, by default)
 #   - Caveat: this run's own counts aren't truly final either (a small trickle
 #     of very late reports carries on past settled_after_days), so
 #     completeness here is a slight overestimate
@@ -72,6 +85,19 @@ COMPLETENESS_THRESHOLDS <- as.numeric(backfill_cfg$completeness_thresholds)
 SNAPSHOT_SPACING_DAYS <- as.integer(backfill_cfg$snapshot_spacing_days)
 N_SNAPSHOTS <- as.integer(backfill_cfg$n_snapshots)
 MIN_LOCATION_CASES_FOR_PLOT <- as.integer(backfill_cfg$min_location_cases_for_plot)
+SNAPSHOT_CSV_SCALES <- as.character(backfill_cfg$snapshot_csv_spatial_scales)
+PLOT_SCALES <- as.character(backfill_cfg$plot_spatial_scales)
+
+across_exports_cfg <- pipeline_configs$epi_linelist$across_exports
+if (is.null(across_exports_cfg)) {
+  stop("pipeline_configs.json has no epi_linelist.across_exports block.", call. = FALSE)
+}
+across_exports_dir <- file.path(data_root, "outputs", across_exports_cfg$dir)
+dir.create(across_exports_dir, recursive = TRUE, showWarnings = FALSE)
+NATIONAL_BY_EXPORT_CSV <- file.path(across_exports_dir, across_exports_cfg$files$status_aggregated_national)
+# Same classification columns 3-aggregate-linelist.R writes, in a fixed order
+# (its own column order varies run to run, as it follows pivot_wider()).
+STATUS_CLASSIFICATION_COLS <- c("blank", "confirmed_case", "not_a_case", "probable_case", "suspected_case")
 
 # The dashboard's current "reporting likely incomplete" window, reported
 # alongside the estimates so the two can be compared directly.
@@ -161,6 +187,24 @@ read_status_snapshot <- function(path, export_date) {
     dplyr::mutate(export_date = export_date)
 }
 
+#' Read one export's national status_aggregated.csv rows (observed and imputed
+#' onset kept as separate rows, as in the source file), with export_date added
+#' and the classification columns in a fixed order. A classification column
+#' missing from that export is left NA rather than 0 (not recorded != none).
+read_national_status <- function(path, export_date) {
+  status <- readr::read_csv(path, show_col_types = FALSE, progress = FALSE,
+                            col_types = readr::cols(.default = readr::col_character()))
+  for (cls in setdiff(STATUS_CLASSIFICATION_COLS, names(status))) status[[cls]] <- NA_character_
+  status |>
+    dplyr::filter(spatial_scale == "national") |>
+    dplyr::transmute(
+      export_date = export_date,
+      date_of_symptom_onset_imputed = as.Date(date_of_symptom_onset_imputed),
+      onset_date_was_imputed = as.logical(onset_date_was_imputed),
+      dplyr::across(dplyr::all_of(STATUS_CLASSIFICATION_COLS), ~ suppressWarnings(as.numeric(.x)))
+    )
+}
+
 #' First days-since-onset at which pooled completeness reaches `threshold`
 #' (NA if it never does within MAX_DAYS_SINCE_ONSET).
 days_to_threshold <- function(lag_df, threshold) {
@@ -199,9 +243,47 @@ snapshots_raw <- dplyr::bind_rows(lapply(seq_along(export_dirs), function(j) {
   read_status_snapshot(file.path(data_root, "outputs", export_dirs[j], "status_aggregated.csv"), export_dates[j])
 }))
 
+# ------------------------- Update across_exports/ ------------------------------
+message("")
+message("B. UPDATING ", across_exports_cfg$dir, "/ RUNNING FILES")
+
+# Rows already in the running file, minus this run's export_date (always
+# rewritten, in case this is a rerun after a fix upstream).
+national_by_export <- if (file.exists(NATIONAL_BY_EXPORT_CSV)) {
+  readr::read_csv(NATIONAL_BY_EXPORT_CSV, show_col_types = FALSE, progress = FALSE,
+                  col_types = readr::cols(
+                    export_date = readr::col_date(),
+                    date_of_symptom_onset_imputed = readr::col_date(),
+                    onset_date_was_imputed = readr::col_logical(),
+                    .default = readr::col_double()
+                  )) |>
+    dplyr::filter(export_date != reference_date)
+} else {
+  NULL
+}
+already_in_file <- if (is.null(national_by_export)) as.Date(character()) else unique(national_by_export$export_date)
+
+# This run's export, plus any earlier dated folder not in the file yet (all of
+# them on the very first run).
+to_add <- export_dates == reference_date | !(export_dates %in% already_in_file)
+message("  ", length(already_in_file), " export(s) already in ", basename(NATIONAL_BY_EXPORT_CSV),
+        "; adding/replacing ", sum(to_add))
+
+new_rows <- dplyr::bind_rows(lapply(which(to_add), function(j) {
+  read_national_status(file.path(data_root, "outputs", export_dirs[j], "status_aggregated.csv"), export_dates[j])
+}))
+
+national_by_export <- dplyr::bind_rows(national_by_export, new_rows) |>
+  dplyr::select(export_date, date_of_symptom_onset_imputed, onset_date_was_imputed, dplyr::all_of(STATUS_CLASSIFICATION_COLS)) |>
+  dplyr::arrange(export_date, date_of_symptom_onset_imputed, onset_date_was_imputed)
+
+write.csv(national_by_export, NATIONAL_BY_EXPORT_CSV, row.names = FALSE, na = "")
+message("  Wrote: ", NATIONAL_BY_EXPORT_CSV, " (", nrow(national_by_export), " rows, ",
+        dplyr::n_distinct(national_by_export$export_date), " exports)")
+
 # ------------------------- Compare Against Reference ---------------------------
 message("")
-message("B. COMPARING EACH EXPORT AGAINST THIS RUN'S COUNTS")
+message("C. COMPARING EACH EXPORT AGAINST THIS RUN'S COUNTS")
 
 reference_counts <- snapshots_raw |>
   dplyr::filter(export_date == reference_date) |>
@@ -225,8 +307,10 @@ backfill_snapshots <- reference_counts |>
   dplyr::arrange(spatial_scale, location, classification, export_date, onset_date)
 
 backfill_snapshots_csv <- file.path(backfill_dir, "backfill_snapshots.csv")
-write.csv(backfill_snapshots, backfill_snapshots_csv, row.names = FALSE)
-message("  Wrote: ", backfill_snapshots_csv, " (", nrow(backfill_snapshots), " rows)")
+backfill_snapshots_out <- dplyr::filter(backfill_snapshots, spatial_scale %in% SNAPSHOT_CSV_SCALES)
+write.csv(backfill_snapshots_out, backfill_snapshots_csv, row.names = FALSE)
+message("  Wrote: ", backfill_snapshots_csv, " (", nrow(backfill_snapshots_out), " rows; ",
+        paste(SNAPSHOT_CSV_SCALES, collapse = "/"), " only)")
 
 # Pooled completeness is the headline number (robust to small daily counts);
 # the per-date median/percentiles only use dates with enough reference cases
@@ -257,7 +341,7 @@ message("  Wrote: ", backfill_by_lag_csv, " (", nrow(backfill_by_lag), " rows)")
 
 # ---------------------------------- Summary ------------------------------------
 message("")
-message("C. SUMMARY")
+message("D. SUMMARY")
 
 summary_groups <- backfill_by_lag |>
   dplyr::group_by(spatial_scale, location, classification) |>
@@ -328,7 +412,7 @@ for (entry in summary_entries) {
 
 # ----------------------------------- Plots -------------------------------------
 message("")
-message("D. BUILDING PLOTS")
+message("E. BUILDING PLOTS")
 
 # Exports nearest to every SNAPSHOT_SPACING_DAYS back from this run, so the
 # epi-curve plot shows a handful of evenly spaced "what we saw then" curves.
@@ -350,11 +434,12 @@ plot_locations <- data.frame(
   reference_cases = vapply(summary_entries, function(e) as.numeric(e$reference_cases), numeric(1)),
   stringsAsFactors = FALSE
 ) |>
-  dplyr::filter(spatial_scale == "national" | reference_cases >= MIN_LOCATION_CASES_FOR_PLOT)
+  dplyr::filter(spatial_scale %in% PLOT_SCALES,
+                spatial_scale == "national" | reference_cases >= MIN_LOCATION_CASES_FOR_PLOT)
 # Empty when there's nothing to compare yet (e.g. only one export, or no onset
 # dates old enough to be settled) -- the loop below then just does nothing.
-message("  Plotting ", nrow(plot_locations), " location(s) (national, plus any with >= ",
-        MIN_LOCATION_CASES_FOR_PLOT, " reference cases)")
+message("  Plotting ", nrow(plot_locations), " location(s) (", paste(PLOT_SCALES, collapse = "/"),
+        " only; non-national ones need >= ", MIN_LOCATION_CASES_FOR_PLOT, " reference cases)")
 
 for (i in seq_len(nrow(plot_locations))) {
   loc <- plot_locations[i, ]

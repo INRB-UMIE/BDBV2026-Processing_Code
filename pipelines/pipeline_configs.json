@@ -112,7 +112,10 @@
     "reporting_backfill": {
       "_comment": "Config for 6-reporting-backfill.R. Compares status_aggregated.csv from every past outputs/<DATE>/ folder (up to and including this run's date) against this run's own, to estimate how complete each onset date's count is N days after onset (backfilling). This run's counts are treated as the reference ('eventual') counts, but only for onset dates at least settled_after_days old -- newer dates are still filling in themselves. Onset dates before onset_start are left out (early exports had a different onset-date data-quality profile; see delay_distribution_fit.onset_cutoff_start). min_reference_count drops onset dates with too few reference cases for a per-date ratio to mean much (they still count towards the pooled completeness). completeness_thresholds are the levels reported in backfill_summary.json as 'days until X% complete'. Plots are only drawn for national plus locations with at least min_location_cases_for_plot reference cases.",
       "classifications": ["confirmed_case"],
-      "spatial_scales": ["national", "province"],
+      "_spatial_scales_comment": "spatial_scales: completeness is calculated (backfill_completeness_by_lag.csv, backfill_summary.json) at each of these. snapshot_csv_spatial_scales: the much bigger per-onset-date backfill_snapshots.csv is only written for these (health zones would add ~100k rows to every dated folder). plot_spatial_scales: plots are only drawn for these.",
+      "spatial_scales": ["national", "province", "healthzone"],
+      "snapshot_csv_spatial_scales": ["national", "province"],
+      "plot_spatial_scales": ["national", "province"],
       "onset_start": "2026-06-01",
       "settled_after_days": 30,
       "max_days_since_onset": 60,
@@ -121,6 +124,13 @@
       "snapshot_spacing_days": 14,
       "n_snapshots": 7,
       "min_location_cases_for_plot": 100
+    },
+    "across_exports": {
+      "_comment": "Running files under outputs/<dir>/ (no date in the path) that build up one export at a time, rather than being rewritten from scratch in each dated outputs/<DATE>/ folder. Each run replaces its own export_date's rows (so reruns/pinned-date runs never duplicate) and fills in any earlier dated folder not in the file yet. Currently written by 6-reporting-backfill.R. status_aggregated_national is every export's national status_aggregated.csv rows stacked, with an export_date column: the epi curve as it looked in each export.",
+      "dir": "across_exports",
+      "files": {
+        "status_aggregated_national": "status_aggregated_national_by_export.csv"
+      }
     }
   },
   "contact_tracing": {
