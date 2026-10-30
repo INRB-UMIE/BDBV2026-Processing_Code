@@ -34,6 +34,13 @@
 #     the epi curve as seen in successive exports, and the completeness curve,
 #     for reporting_backfill.plot_spatial_scales only (national + any province
 #     with at least min_location_cases_for_plot reference cases, by default)
+#   - Renders one comparison plot per reporting_backfill.
+#     comparison_plot_spatial_scales level (provinces, health zones by
+#     default): every location there with at least min_location_cases_for_plot
+#     reference cases, pooled line + 10th-90th percentile ribbon, national
+#     dotted for reference. Up to comparison_plot_max_single_panel locations
+#     share one panel; more become small multiples (one panel per location).
+#     Saved as plots/comparison_<scale>_<classification>_completeness_by_days_since_onset
 #   - Caveat: this run's own counts aren't truly final either (a small trickle
 #     of very late reports carries on past settled_after_days), so
 #     completeness here is a slight overestimate
@@ -87,6 +94,8 @@ N_SNAPSHOTS <- as.integer(backfill_cfg$n_snapshots)
 MIN_LOCATION_CASES_FOR_PLOT <- as.integer(backfill_cfg$min_location_cases_for_plot)
 SNAPSHOT_CSV_SCALES <- as.character(backfill_cfg$snapshot_csv_spatial_scales)
 PLOT_SCALES <- as.character(backfill_cfg$plot_spatial_scales)
+COMPARISON_PLOT_SCALES <- as.character(backfill_cfg$comparison_plot_spatial_scales)
+COMPARISON_MAX_SINGLE_PANEL <- as.integer(backfill_cfg$comparison_plot_max_single_panel)
 
 across_exports_cfg <- pipeline_configs$epi_linelist$across_exports
 if (is.null(across_exports_cfg)) {
@@ -124,6 +133,9 @@ PLOT_WIDTH_IN <- 9
 PLOT_HEIGHT_IN <- 4.5
 BASE_FONT_SIZE <- 12
 ROLLING_DAYS <- 7
+# One color per location on the single-panel comparison plot (taken from
+# 4-make-dashboard-plots.R's palette); national is always COLOR_INK, dotted.
+COMPARISON_COLORS <- c("#9B7D4E", "#5b86b3", "#b23b2e", "#7c4a12", "#4a7c59", "#7c1d1d")
 
 backfill_plot_theme <- function() {
   theme_minimal(base_size = BASE_FONT_SIZE) +
@@ -137,11 +149,11 @@ backfill_plot_theme <- function() {
     )
 }
 
-save_backfill_plot <- function(plot, stem) {
+save_backfill_plot <- function(plot, stem, width = PLOT_WIDTH_IN, height = PLOT_HEIGHT_IN) {
   svg_path <- file.path(backfill_plots_dir, paste0(stem, ".svg"))
   png_path <- file.path(backfill_plots_dir, paste0(stem, ".png"))
-  ggsave(svg_path, plot = plot, device = "svg", width = PLOT_WIDTH_IN, height = PLOT_HEIGHT_IN, units = "in")
-  ggsave(png_path, plot = plot, device = "png", width = PLOT_WIDTH_IN, height = PLOT_HEIGHT_IN, units = "in", dpi = 150)
+  ggsave(svg_path, plot = plot, device = "svg", width = width, height = height, units = "in")
+  ggsave(png_path, plot = plot, device = "png", width = width, height = height, units = "in", dpi = 150)
   message("  Wrote: ", svg_path, " (+ .png)")
 }
 
@@ -515,6 +527,106 @@ for (i in seq_len(nrow(plot_locations))) {
       ) +
       backfill_plot_theme()
     save_backfill_plot(p_lag, paste0(stem_base, "_completeness_by_days_since_onset"))
+  }
+}
+
+# --------------------------- Comparison Plots ----------------------------------
+message("")
+message("F. BUILDING COMPARISON PLOTS (all locations at a scale on one plot)")
+
+# Every location at each COMPARISON_PLOT_SCALES scale with enough reference
+# cases, compared against national. Pooled completeness as the line, the
+# 10th-90th percentile across onset dates as the ribbon. Few locations share
+# one panel (one color each); more become small multiples, one panel each,
+# ordered by reference cases, with national repeated as a dotted line in every
+# panel for comparison.
+location_cases <- data.frame(
+  spatial_scale = vapply(summary_entries, function(e) e$spatial_scale, character(1)),
+  location = vapply(summary_entries, function(e) e$location, character(1)),
+  classification = vapply(summary_entries, function(e) e$classification, character(1)),
+  reference_cases = vapply(summary_entries, function(e) as.numeric(e$reference_cases), numeric(1)),
+  stringsAsFactors = FALSE
+)
+scale_labels <- c(province = "provinces", healthzone = "health zones")
+
+for (cls in BACKFILL_CLASSIFICATIONS) {
+  class_label <- tools::toTitleCase(gsub("_", " ", cls))
+  national_lag <- backfill_by_lag |>
+    dplyr::filter(spatial_scale == "national", classification == cls)
+
+  for (scl in COMPARISON_PLOT_SCALES) {
+    keep_locs <- location_cases |>
+      dplyr::filter(spatial_scale == scl, classification == cls,
+                    reference_cases >= MIN_LOCATION_CASES_FOR_PLOT) |>
+      dplyr::arrange(dplyr::desc(reference_cases))
+    if (!nrow(keep_locs)) {
+      message("  No ", scl, " with >= ", MIN_LOCATION_CASES_FOR_PLOT, " reference cases -- skipping")
+      next
+    }
+
+    loc_labels <- paste0(keep_locs$location, " (", format(keep_locs$reference_cases, big.mark = ",", trim = TRUE), " cases)")
+    comp_df <- backfill_by_lag |>
+      dplyr::filter(spatial_scale == scl, classification == cls, location %in% keep_locs$location) |>
+      dplyr::mutate(location_label = factor(loc_labels[match(location, keep_locs$location)], levels = loc_labels))
+
+    single_panel <- nrow(keep_locs) <= COMPARISON_MAX_SINGLE_PANEL
+    scale_label <- if (!is.na(scale_labels[scl])) unname(scale_labels[scl]) else scl
+    # Small or reclassified locations can go above 100% (an earlier export
+    # counted more than this run does) -- let the axis show that, up to a cap
+    # so one noisy ribbon can't squash everything else.
+    y_top <- max(105, min(150, 100 * max(comp_df$pooled_completeness, national_lag$pooled_completeness, na.rm = TRUE) + 5))
+    national_cases <- location_cases$reference_cases[location_cases$spatial_scale == "national" & location_cases$classification == cls][1]
+    national_label <- paste0("National (", format(national_cases, big.mark = ",", trim = TRUE), " cases)")
+
+    p_comp <- ggplot(comp_df, aes(x = days_since_onset)) +
+      annotate("rect", xmin = 0, xmax = incomplete_reporting_days, ymin = -Inf, ymax = Inf,
+               fill = COLOR_INCOMPLETE, alpha = 0.25) +
+      geom_hline(yintercept = 100 * COMPLETENESS_THRESHOLDS, linetype = "dashed", color = COLOR_MUTED, linewidth = 0.3) +
+      geom_line(data = national_lag, aes(y = 100 * pooled_completeness, linetype = national_label),
+                color = COLOR_INK, linewidth = 0.6, na.rm = TRUE) +
+      scale_linetype_manual(values = setNames("dotted", national_label)) +
+      scale_x_continuous(expand = c(0, 0)) +
+      coord_cartesian(xlim = c(0, MAX_DAYS_SINCE_ONSET), ylim = c(0, y_top)) +
+      labs(
+        title = paste0("How complete is a day's count, by days since that day? All ", scale_label, " compared"),
+        subtitle = paste0("Compared with the ", format(reference_date, "%d %b"), " export; ", scale_label, " with >= ",
+                          MIN_LOCATION_CASES_FOR_PLOT, " ", tolower(class_label), "s in the comparison window.\n",
+                          "Line = all onset dates pooled; ribbon = middle 80% of onset dates."),
+        x = "Days between symptom onset and export",
+        y = paste0("% of eventual ", tolower(class_label), " count reported"),
+        caption = paste0("Onset dates ", format(BACKFILL_ONSET_START, "%d %b"), " to ", format(reference_onset_end, "%d %b"),
+                         ", across ", length(export_dates), " exports. Shaded: current \"incomplete\" window (",
+                         incomplete_reporting_days, " days). Dashed lines at ",
+                         paste0(round(100 * COMPLETENESS_THRESHOLDS), "%", collapse = " / "),
+                         ". Above 100% = an earlier export counted more than this one (e.g. later reclassification).")
+      ) +
+      backfill_plot_theme()
+
+    if (single_panel) {
+      loc_colors <- setNames(rep_len(COMPARISON_COLORS, length(loc_labels)), loc_labels)
+      p_comp <- p_comp +
+        geom_ribbon(aes(ymin = 100 * p10_completeness, ymax = 100 * p90_completeness, fill = location_label),
+                    alpha = 0.15, na.rm = TRUE) +
+        geom_line(aes(y = 100 * pooled_completeness, color = location_label), linewidth = 1, na.rm = TRUE) +
+        scale_color_manual(values = loc_colors, aesthetics = c("colour", "fill")) +
+        guides(fill = "none", color = guide_legend(order = 1), linetype = guide_legend(order = 2))
+      plot_width <- PLOT_WIDTH_IN
+      plot_height <- PLOT_HEIGHT_IN + 0.5
+    } else {
+      n_cols <- 4L
+      n_rows <- ceiling(nrow(keep_locs) / n_cols)
+      p_comp <- p_comp +
+        geom_ribbon(aes(ymin = 100 * p10_completeness, ymax = 100 * p90_completeness),
+                    fill = COLOR_COMPLETENESS, alpha = 0.3, na.rm = TRUE) +
+        geom_line(aes(y = 100 * pooled_completeness), color = COLOR_COMPLETENESS, linewidth = 0.8, na.rm = TRUE) +
+        facet_wrap(~ location_label, ncol = n_cols) +
+        theme(strip.text = element_text(hjust = 0, face = "bold", size = BASE_FONT_SIZE - 2))
+      plot_width <- 12
+      plot_height <- 1.5 + 2.2 * n_rows
+    }
+
+    stem <- paste0("comparison_", scl, "_", cls, "_completeness_by_days_since_onset")
+    save_backfill_plot(p_comp, stem, width = plot_width, height = plot_height)
   }
 }
 

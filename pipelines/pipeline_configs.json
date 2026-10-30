@@ -123,7 +123,10 @@
       "completeness_thresholds": [0.75, 0.9, 0.95],
       "snapshot_spacing_days": 14,
       "n_snapshots": 7,
-      "min_location_cases_for_plot": 100
+      "min_location_cases_for_plot": 100,
+      "_comparison_plots_comment": "comparison_plot_spatial_scales: one extra completeness plot per scale comparing all its locations with at least min_location_cases_for_plot reference cases (plus national as a dotted reference line), each with its 10th-90th percentile ribbon. Up to comparison_plot_max_single_panel locations share one panel; more than that are drawn as small multiples, one panel per location.",
+      "comparison_plot_spatial_scales": ["province", "healthzone"],
+      "comparison_plot_max_single_panel": 6
     },
     "across_exports": {
       "_comment": "Running files under outputs/<dir>/ (no date in the path) that build up one export at a time, rather than being rewritten from scratch in each dated outputs/<DATE>/ folder. Each run replaces its own export_date's rows (so reruns/pinned-date runs never duplicate) and fills in any earlier dated folder not in the file yet. Currently written by 6-reporting-backfill.R. status_aggregated_national is every export's national status_aggregated.csv rows stacked, with an export_date column: the epi curve as it looked in each export.",
