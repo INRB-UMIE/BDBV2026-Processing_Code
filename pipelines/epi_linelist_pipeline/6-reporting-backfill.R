@@ -30,6 +30,13 @@
 #     each reporting_backfill.completeness_thresholds level is reached
 #     (pooled), per location, alongside the current nowcasting.test_days
 #     window the dashboard shades as "reporting likely incomplete"
+#   - Writes reporting_backfill/incomplete_windows.json: per national /
+#     province / health zone, how many of the most recent onset days are still
+#     expected to be below reporting_backfill.incomplete_window.threshold
+#     complete (smoothed, clamped; small zones fall back to their province,
+#     anything else to national). Read by the dashboard build
+#     (BDBV2026-Epidemic_Dashboard) for the grey band on the confirmed-cases
+#     chart
 #   - Renders two plots (SVG + PNG) per location under reporting_backfill/plots/:
 #     the epi curve as seen in successive exports, and the completeness curve,
 #     for reporting_backfill.plot_spatial_scales only (national + any province
@@ -422,9 +429,184 @@ for (entry in summary_entries) {
   )
 }
 
+# --------------------------- Incomplete Windows --------------------------------
+message("")
+message("E. INCOMPLETE-REPORTING WINDOWS (the dashboard's grey band)")
+
+# How many of the most recent onset days are still expected to be below
+# WINDOW_THRESHOLD complete, per location -- read by the dashboard build
+# (BDBV2026-Epidemic_Dashboard, load_trends_series()) to shade the confirmed-
+# cases-by-onset chart per selected location instead of one fixed window.
+window_cfg <- backfill_cfg$incomplete_window
+if (is.null(window_cfg)) {
+  stop("pipeline_configs.json has no epi_linelist.reporting_backfill.incomplete_window block.", call. = FALSE)
+}
+WINDOW_CLASSIFICATION <- as.character(window_cfg$classification)
+WINDOW_THRESHOLD <- as.numeric(window_cfg$threshold)
+WINDOW_SMOOTHING_DAYS <- as.integer(window_cfg$smoothing_days)
+WINDOW_MIN_DAYS <- as.integer(window_cfg$min_days)
+WINDOW_MAX_DAYS <- as.integer(window_cfg$max_days)
+WINDOW_MIN_CASES <- as.numeric(window_cfg$min_reference_cases)
+
+#' First days since onset at which completeness reaches WINDOW_THRESHOLD,
+#' using pooled completeness over the WINDOW_SMOOTHING_DAYS lags centred on
+#' each lag (sum of counts / sum of reference counts), so a single noisy lag
+#' can't pull the answer earlier or later. Clamped to [WINDOW_MIN_DAYS,
+#' WINDOW_MAX_DAYS]; WINDOW_MAX_DAYS if the threshold is never reached.
+smoothed_window_days <- function(lag_df) {
+  lag_df <- dplyr::arrange(lag_df, days_since_onset)
+  if (!nrow(lag_df)) {
+    return(NA_integer_)
+  }
+  half <- WINDOW_SMOOTHING_DAYS %/% 2L
+  smoothed <- vapply(seq_len(nrow(lag_df)), function(k) {
+    in_win <- abs(lag_df$days_since_onset - lag_df$days_since_onset[k]) <= half
+    ref <- sum(lag_df$reference_count[in_win])
+    if (ref > 0) sum(lag_df$count[in_win]) / ref else NA_real_
+  }, numeric(1))
+  hit <- lag_df$days_since_onset[!is.na(smoothed) & smoothed >= WINDOW_THRESHOLD]
+  days <- if (length(hit)) as.integer(min(hit)) else WINDOW_MAX_DAYS
+  as.integer(min(max(days, WINDOW_MIN_DAYS), WINDOW_MAX_DAYS))
+}
+
+# Reference cases per location (also used by the comparison plots below).
+location_cases <- data.frame(
+  spatial_scale = vapply(summary_entries, function(e) e$spatial_scale, character(1)),
+  location = vapply(summary_entries, function(e) e$location, character(1)),
+  classification = vapply(summary_entries, function(e) e$classification, character(1)),
+  reference_cases = vapply(summary_entries, function(e) as.numeric(e$reference_cases), numeric(1)),
+  stringsAsFactors = FALSE
+)
+
+# Own estimates, for locations with enough reference cases (national always).
+own_windows <- location_cases |>
+  dplyr::filter(classification == WINDOW_CLASSIFICATION,
+                spatial_scale == "national" | reference_cases >= WINDOW_MIN_CASES)
+own_windows$days <- vapply(seq_len(nrow(own_windows)), function(k) {
+  smoothed_window_days(dplyr::filter(
+    backfill_by_lag,
+    spatial_scale == own_windows$spatial_scale[k],
+    location == own_windows$location[k],
+    classification == WINDOW_CLASSIFICATION
+  ))
+}, integer(1))
+
+national_window <- own_windows$days[own_windows$spatial_scale == "national"][1]
+national_source <- "own"
+if (!length(national_window) || is.na(national_window)) {
+  # Nothing to estimate from yet (e.g. a very first run) -- keep the
+  # dashboard's existing fixed window.
+  national_window <- incomplete_reporting_days
+  national_source <- "config:nowcasting.test_days"
+}
+province_window <- with(own_windows[own_windows$spatial_scale == "province", ], setNames(days, location))
+
+# Health zone -> province, from this run's linelist (each zone's most common
+# province), so a small zone falls back to its own province rather than to
+# national -- provinces differ a lot (e.g. Nord-Kivu vs Ituri).
+zone_province <- character()
+linelist_csv <- file.path(epi_outputs_dir, "dhis2_linelist_with_imputed_onset.csv")
+if (file.exists(linelist_csv)) {
+  # A read problem only costs the province fallback, not the whole step.
+  zone_province <- tryCatch({
+    zone_province_df <- readr::read_csv(linelist_csv, show_col_types = FALSE, progress = FALSE,
+                                        col_select = c("province", "health_zone"),
+                                        col_types = readr::cols(.default = readr::col_character())) |>
+      dplyr::filter(!is.na(province), !is.na(health_zone)) |>
+      dplyr::count(health_zone, province) |>
+      dplyr::group_by(health_zone) |>
+      dplyr::slice_max(n, n = 1, with_ties = FALSE) |>
+      dplyr::ungroup()
+    setNames(zone_province_df$province, zone_province_df$health_zone)
+  }, error = function(e) {
+    message("  Couldn't read province/health_zone from ", basename(linelist_csv), " (",
+            conditionMessage(e), ") -- small health zones fall back to national")
+    character()
+  })
+} else {
+  message("  ", basename(linelist_csv), " not found -- small health zones fall back to national")
+}
+
+# Every location in this run's counts gets an entry (not only those in the
+# settled comparison window), so a zone with only recent cases still gets a
+# province/national window rather than being missing.
+all_window_locations <- snapshots_raw |>
+  dplyr::filter(export_date == reference_date, classification == WINDOW_CLASSIFICATION) |>
+  dplyr::distinct(spatial_scale, location) |>
+  dplyr::left_join(
+    dplyr::select(location_cases[location_cases$classification == WINDOW_CLASSIFICATION, ],
+                  spatial_scale, location, reference_cases),
+    by = c("spatial_scale", "location")
+  ) |>
+  dplyr::left_join(dplyr::select(own_windows, spatial_scale, location, own_days = days),
+                   by = c("spatial_scale", "location")) |>
+  dplyr::mutate(
+    reference_cases = tidyr::replace_na(reference_cases, 0),
+    fallback_province = ifelse(spatial_scale == "healthzone", unname(zone_province[location]), NA_character_),
+    province_days = unname(province_window[fallback_province]),
+    days = dplyr::case_when(
+      !is.na(own_days) ~ own_days,
+      !is.na(province_days) ~ as.integer(province_days),
+      TRUE ~ as.integer(national_window)
+    ),
+    source = dplyr::case_when(
+      !is.na(own_days) ~ "own",
+      !is.na(province_days) ~ paste0("province:", fallback_province),
+      TRUE ~ "national"
+    )
+  )
+
+window_entries <- function(scale) {
+  rows <- all_window_locations[all_window_locations$spatial_scale == scale, ]
+  out <- lapply(seq_len(nrow(rows)), function(k) {
+    list(days = rows$days[k], source = rows$source[k], reference_cases = rows$reference_cases[k])
+  })
+  # Always a JSON object (never []), even when empty, so readers can index it by name.
+  if (length(out)) setNames(out, rows$location) else structure(list(), names = character())
+}
+
+incomplete_windows <- list(
+  reference_date = format(reference_date),
+  classification = WINDOW_CLASSIFICATION,
+  threshold = WINDOW_THRESHOLD,
+  smoothing_days = WINDOW_SMOOTHING_DAYS,
+  min_days = WINDOW_MIN_DAYS,
+  max_days = WINDOW_MAX_DAYS,
+  min_reference_cases = WINDOW_MIN_CASES,
+  note = paste(
+    "days = the most recent onset days still expected to be below threshold complete,",
+    "from how earlier exports filled in (see backfill_completeness_by_lag.csv).",
+    "Shade onset dates from reference_date - days onwards. source = own (this",
+    "location's own estimate), province:<name> (health zone too small; its province's",
+    "estimate) or national. Health areas should use their health zone's entry."
+  ),
+  national = list(days = as.integer(national_window), source = national_source,
+                  reference_cases = location_cases$reference_cases[location_cases$spatial_scale == "national" &
+                                                                     location_cases$classification == WINDOW_CLASSIFICATION][1]),
+  provinces = window_entries("province"),
+  health_zones = window_entries("healthzone")
+)
+
+incomplete_windows_json <- file.path(backfill_dir, "incomplete_windows.json")
+writeLines(
+  jsonlite::toJSON(incomplete_windows, pretty = TRUE, auto_unbox = TRUE, na = "null"),
+  incomplete_windows_json
+)
+message("  Wrote: ", incomplete_windows_json)
+message("  National: ", national_window, " days to ", round(100 * WINDOW_THRESHOLD), "% complete")
+for (k in which(own_windows$spatial_scale == "province")) {
+  message("  ", own_windows$location[k], ": ", own_windows$days[k], " days")
+}
+message("  Health zones: ", sum(all_window_locations$spatial_scale == "healthzone" & all_window_locations$source == "own"),
+        " own estimate, ",
+        sum(all_window_locations$spatial_scale == "healthzone" & grepl("^province:", all_window_locations$source)),
+        " province fallback, ",
+        sum(all_window_locations$spatial_scale == "healthzone" & all_window_locations$source == "national"),
+        " national fallback")
+
 # ----------------------------------- Plots -------------------------------------
 message("")
-message("E. BUILDING PLOTS")
+message("F. BUILDING PLOTS")
 
 # Exports nearest to every SNAPSHOT_SPACING_DAYS back from this run, so the
 # epi-curve plot shows a handful of evenly spaced "what we saw then" curves.
@@ -532,7 +714,7 @@ for (i in seq_len(nrow(plot_locations))) {
 
 # --------------------------- Comparison Plots ----------------------------------
 message("")
-message("F. BUILDING COMPARISON PLOTS (all locations at a scale on one plot)")
+message("G. BUILDING COMPARISON PLOTS (all locations at a scale on one plot)")
 
 # Every location at each COMPARISON_PLOT_SCALES scale with enough reference
 # cases, compared against national. Pooled completeness as the line, the
@@ -540,13 +722,7 @@ message("F. BUILDING COMPARISON PLOTS (all locations at a scale on one plot)")
 # one panel (one color each); more become small multiples, one panel each,
 # ordered by reference cases, with national repeated as a dotted line in every
 # panel for comparison.
-location_cases <- data.frame(
-  spatial_scale = vapply(summary_entries, function(e) e$spatial_scale, character(1)),
-  location = vapply(summary_entries, function(e) e$location, character(1)),
-  classification = vapply(summary_entries, function(e) e$classification, character(1)),
-  reference_cases = vapply(summary_entries, function(e) as.numeric(e$reference_cases), numeric(1)),
-  stringsAsFactors = FALSE
-)
+# location_cases (reference cases per location) is built in section E above.
 scale_labels <- c(province = "provinces", healthzone = "health zones")
 
 for (cls in BACKFILL_CLASSIFICATIONS) {
