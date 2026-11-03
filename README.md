@@ -35,6 +35,10 @@ Every path in these scripts is one of two roots, resolved once in `0-setup.R` an
 - **`code_root`** — this repo (wherever it's checked out) — used for `pipelines/pipeline_configs.json`, `qc_codes.csv`, and sourcing the other step scripts.
 - **`data_root`** — the `BDBV2026-Processed_Sensitive_Data` repo — used for everything under `data/` and `outputs/`.
 
+## Upstream pipeline (`upstream_pipeline/`)
+
+A read-only copy of the upstream code that cleans the raw exports and matches people across them (column standardisation, de-duplication, person matching and the link classifier steps, quality checks). It is copied automatically from the private `BDBV2026-Secure_Raw_Data` repo whenever that code changes. A check blocks the copy if it finds case IDs, real names or secrets. Do not edit it here, because changes are overwritten. See `upstream_pipeline/README.md`.
+
 ## Finding the data repo
 
 `resolve_data_root()` in `pipelines/0-setup.R` resolves `data_root` in this order:
