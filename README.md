@@ -17,6 +17,7 @@ This repo holds only R scripts. All input and output data — the de-identified 
 pipelines/
 ├── 0-setup.R                       # resolves code_root (this repo) and data_root (the data repo), loads packages/config
 ├── pipeline_configs.json
+├── upstream_pipeline/              # read-only mirror of the upstream cleaning/matching code (see below)
 └── epi_linelist_pipeline/
     ├── 1-fit_delay_distributions.R # delay intervals + lognormal/gamma distribution fits (epidist/cmdstanr)
     ├── 2-date_imputation.R         # imputes missing/out-of-range onset dates by sampling step 1's best-fit delay distribution
@@ -35,9 +36,9 @@ Every path in these scripts is one of two roots, resolved once in `0-setup.R` an
 - **`code_root`** — this repo (wherever it's checked out) — used for `pipelines/pipeline_configs.json`, `qc_codes.csv`, and sourcing the other step scripts.
 - **`data_root`** — the `BDBV2026-Processed_Sensitive_Data` repo — used for everything under `data/` and `outputs/`.
 
-## Upstream pipeline (`upstream_pipeline/`)
+## Upstream pipeline (`pipelines/upstream_pipeline/`)
 
-A read-only copy of the upstream code that cleans the raw exports and matches people across them (column standardisation, de-duplication, person matching and the link classifier steps, quality checks). It is copied automatically from the private `BDBV2026-Secure_Raw_Data` repo whenever that code changes. A check blocks the copy if it finds case IDs, real names or secrets. Do not edit it here, because changes are overwritten. See `upstream_pipeline/README.md`.
+A read-only copy of the upstream code that cleans the raw exports and matches people across them (column standardisation, de-duplication, person matching and the link classifier steps, quality checks). It is copied automatically from the private `BDBV2026-Secure_Raw_Data` repo whenever that code changes. A check blocks the copy if it finds case IDs, real names or secrets. Do not edit it here, because changes are overwritten. See `pipelines/upstream_pipeline/README.md`. None of the steps here source it.
 
 ## Finding the data repo
 
