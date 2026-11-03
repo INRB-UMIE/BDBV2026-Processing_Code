@@ -1,4 +1,4 @@
-![Private](https://img.shields.io/badge/Repository-Private-red)
+![Public](https://img.shields.io/badge/Repository-Public-brightgreen)
 ![De-identified](https://img.shields.io/badge/Data-De--identified-yellow)
 
 # Ebola Bundibugyo DRC 2026 — Processing Code

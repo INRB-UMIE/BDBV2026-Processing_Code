@@ -103,15 +103,12 @@ step above pulls the knit: field's function out of the YAML front matter and
 calls it directly to get the same behaviour non-interactively.
 
 Requires a working LaTeX install for the PDF knit and the `rsvg` package to
-rasterize the dashboard's SVGs for embedding. In CI, TinyTeX is baked into
-the bdbv2026-cmdstan image (see docker/cmdstan/Dockerfile in
-BDBV2026-Processed_Sensitive_Data) rather than installed at pipeline run
-time, since the pipeline's self-hosted runner has restricted network
-access -- the on-demand tinytex::install_tinytex() call in this file's setup
-chunk below is only a fallback for local/manual renders on a machine that
-doesn't already have TinyTeX (rsvg similarly ships pre-built binaries for
-macOS/Windows from CRAN; on Linux you'd need libcairo2-dev/librsvg2-dev
-system packages first, both baked into the image already).
+rasterize the dashboard's SVGs for embedding. In CI these are pre-installed
+rather than installed at run time. The on-demand tinytex::install_tinytex()
+call in this file's setup chunk below is a fallback for local/manual renders
+on a machine that doesn't already have TinyTeX (rsvg ships pre-built binaries
+for macOS/Windows from CRAN; on Linux you'd need the libcairo2-dev and
+librsvg2-dev system packages first).
 
 Every section reads its input from disk (outputs/<DATE>/...) rather than
 relying on in-memory objects from a prior step, since a knit is normally a
