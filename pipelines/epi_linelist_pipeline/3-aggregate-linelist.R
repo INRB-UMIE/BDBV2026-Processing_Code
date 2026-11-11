@@ -17,6 +17,9 @@
 #     this sync -- else an empty placeholder
 #   - Writes lab_positivity_aggregated.csv: the same Wilson-CI + 5-day-rolling
 #     positivity, but by lab and on lab_analysis_date rather than onset date
+#   - Writes lab_turnaround_aggregated.csv: per lab, 5-day sliding-window
+#     turnaround time (days from date_of_sample_collection to
+#     lab_analysis_date) -- median, IQR, mean, and share within 2 days
 #   - sandbox_mode (off by default) is a placeholder for exploratory ad hoc
 #     work, not run automatically -- currently empty
 
@@ -498,6 +501,62 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
   write.csv(lab_positivity_5day, lab_positivity_aggregated_csv, row.names = FALSE)
   message("  Wrote: ", lab_positivity_aggregated_csv, " (", nrow(lab_positivity_5day), " rows)")
 
+  # ----------------------- Lab turnaround time (TAT) ---------------------------
+  # Turnaround = days from sample collection to lab analysis, per sample.
+  # Summarised per lab over a 5-day sliding window on lab_analysis_date (same
+  # window as the lab positivity above), so each row describes all samples a
+  # lab analysed in the 5 days up to and including that date.
+  message("")
+  message("F. LAB TURNAROUND TIME")
+
+  if (!"date_of_sample_collection" %in% names(processed_dhis2_linelist)) {
+    message("  Skipping lab turnaround — date_of_sample_collection column absent in latest processed linelist.")
+  } else {
+    tat_base <- processed_dhis2_linelist |>
+      dplyr::filter(!is.na(lab_name), lab_name != "") |>
+      dplyr::filter(!is.na(lab_analysis_date), !is.na(date_of_sample_collection)) |>
+      dplyr::filter(!lab_analysis_date < as.Date("2026-04-01")) |>
+      dplyr::mutate(
+        lab_analysis_date = as.Date(lab_analysis_date),
+        turnaround_days = as.numeric(lab_analysis_date - as.Date(date_of_sample_collection))
+      )
+
+    # Analysed before collected is a data-entry error, not a real turnaround.
+    n_negative_tat <- sum(tat_base$turnaround_days < 0)
+    if (n_negative_tat > 0) {
+      message("  Dropping ", n_negative_tat, " sample(s) with lab_analysis_date before date_of_sample_collection")
+    }
+    tat_base <- dplyr::filter(tat_base, turnaround_days >= 0)
+
+    lab_turnaround_5day <- tat_base |>
+      dplyr::select(lab_name, lab_analysis_date, turnaround_days) |>
+      dplyr::arrange(lab_name, lab_analysis_date) |>
+      dplyr::group_by(lab_name) |>
+      dplyr::mutate(
+        # One vector of turnaround times per row: every sample this lab analysed
+        # in [date - 4, date]. Same-day rows share an identical window.
+        tat_window = slider::slide_index(turnaround_days, lab_analysis_date, ~ .x, before = 4L, after = 0L)
+      ) |>
+      dplyr::group_by(lab_name, lab_analysis_date) |>
+      dplyr::mutate(samples_analysed_daily = dplyr::n()) |>
+      dplyr::slice(1) |>
+      dplyr::ungroup() |>
+      dplyr::mutate(
+        rolling_samples         = lengths(tat_window),
+        rolling_tat_median      = vapply(tat_window, stats::median, numeric(1)),
+        rolling_tat_q25         = vapply(tat_window, stats::quantile, numeric(1), probs = 0.25, names = FALSE),
+        rolling_tat_q75         = vapply(tat_window, stats::quantile, numeric(1), probs = 0.75, names = FALSE),
+        rolling_tat_mean        = vapply(tat_window, mean, numeric(1)),
+        rolling_prop_within_2d  = vapply(tat_window, function(x) mean(x <= 2), numeric(1))
+      ) |>
+      dplyr::select(-turnaround_days, -tat_window) |>
+      dplyr::mutate(lab_name_long = unname(LAB_NAME_MAP[lab_name]))
+
+    lab_turnaround_csv <- file.path(epi_outputs_dir, "lab_turnaround_aggregated.csv")
+    write.csv(lab_turnaround_5day, lab_turnaround_csv, row.names = FALSE)
+    message("  Wrote: ", lab_turnaround_csv, " (", nrow(lab_turnaround_5day), " rows)")
+  }
+
 } # end if ("lab_analysis_date" %in% names(processed_dhis2_linelist))
 
 
@@ -520,7 +579,8 @@ dhis2_linelist_aggregated = T
 keep_objects <- c(
   keep_objects, "dhis2_linelist_aggregated",
   "dhis2_linelist_aggregated_status", "dhis2_linelist_cumulative_positive_deaths",
-  "dhis2_linelist_positivity_aggregated", "lab_positivity_5day"
+  "dhis2_linelist_positivity_aggregated", "lab_positivity_5day",
+  "lab_turnaround_5day"
 )
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)
