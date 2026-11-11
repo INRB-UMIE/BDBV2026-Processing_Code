@@ -10,8 +10,10 @@
 #     confirmed_case counts (non-positive classifications dropped)
 #   - Writes cumulative_positive_deaths.csv: daily and cumulative counts of
 #     confirmed death alerts (type_of_alert = death,
-#     final_mve_case_classification = confirmed_case) by reporting_date, at the
-#     same four spatial scales
+#     final_mve_case_classification = confirmed_case) by
+#     date_of_symptom_onset_imputed (onset date, like status_aggregated.csv, so
+#     the dashboard can shade it with the same per-location backfill windows),
+#     at the same four spatial scales
 #   - Writes rolling_positivity.csv: 5-day rolling test positivity (Wilson CI),
 #     at the same four spatial scales, when lab_analysis_date is present in
 #     this sync -- else an empty placeholder
@@ -149,8 +151,8 @@ if (length(unknown_alert_labels)) {
 deaths_base <- processed_dhis2_linelist |>
   dplyr::filter(is_death_alert(type_of_alert)) |>
   dplyr::filter(final_mve_case_classification == "confirmed_case") |>
-  dplyr::filter(!is.na(reporting_date)) |>
-  dplyr::filter(!reporting_date < as.Date("2026-04-01"))
+  dplyr::filter(!is.na(date_of_symptom_onset_imputed)) |>
+  dplyr::filter(!date_of_symptom_onset_imputed < as.Date("2026-04-01"))
 
 # deaths_base spans the whole outbreak from 2026-04-01, not just this sync, so
 # once any confirmed death alert exists it stays non-empty. Empty therefore
@@ -173,36 +175,36 @@ if (nrow(processed_dhis2_linelist) > 0L && nrow(deaths_base) == 0L) {
 }
 
 national_deaths <- deaths_base |>
-  dplyr::group_by(country, reporting_date) |>
+  dplyr::group_by(country, date_of_symptom_onset_imputed) |>
   dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
-  dplyr::arrange(reporting_date) |>
+  dplyr::arrange(date_of_symptom_onset_imputed) |>
   dplyr::group_by(country) |>
   dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
   dplyr::ungroup() |>
   dplyr::mutate(spatial_scale = "national", province = NA_character_, health_zone = NA_character_)
 
 province_deaths <- deaths_base |>
-  dplyr::group_by(country, province, reporting_date) |>
+  dplyr::group_by(country, province, date_of_symptom_onset_imputed) |>
   dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
-  dplyr::arrange(province, reporting_date) |>
+  dplyr::arrange(province, date_of_symptom_onset_imputed) |>
   dplyr::group_by(province) |>
   dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
   dplyr::ungroup() |>
   dplyr::mutate(spatial_scale = "province", health_zone = NA_character_)
 
 healthzone_deaths <- deaths_base |>
-  dplyr::group_by(country, health_zone, reporting_date) |>
+  dplyr::group_by(country, health_zone, date_of_symptom_onset_imputed) |>
   dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
-  dplyr::arrange(health_zone, reporting_date) |>
+  dplyr::arrange(health_zone, date_of_symptom_onset_imputed) |>
   dplyr::group_by(health_zone) |>
   dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
   dplyr::ungroup() |>
   dplyr::mutate(spatial_scale = "healthzone", province = NA_character_)
 
 healtharea_deaths <- deaths_base |>
-  dplyr::group_by(country, health_zone, health_area, reporting_date) |>
+  dplyr::group_by(country, health_zone, health_area, date_of_symptom_onset_imputed) |>
   dplyr::summarise(daily_deaths = dplyr::n(), .groups = "drop") |>
-  dplyr::arrange(health_zone, health_area, reporting_date) |>
+  dplyr::arrange(health_zone, health_area, date_of_symptom_onset_imputed) |>
   dplyr::group_by(health_zone, health_area) |>
   dplyr::mutate(cumulative_deaths = cumsum(daily_deaths)) |>
   dplyr::ungroup() |>
@@ -211,7 +213,7 @@ healtharea_deaths <- deaths_base |>
 dhis2_linelist_cumulative_positive_deaths <- dplyr::bind_rows(
   national_deaths, province_deaths, healthzone_deaths, healtharea_deaths
 ) |>
-  dplyr::arrange(reporting_date)
+  dplyr::arrange(date_of_symptom_onset_imputed)
 
 cumulative_positive_deaths_csv <- file.path(epi_outputs_dir, "cumulative_positive_deaths.csv")
 write.csv(dhis2_linelist_cumulative_positive_deaths, cumulative_positive_deaths_csv, row.names = FALSE)

@@ -551,7 +551,12 @@ load_cumulative_deaths_entries <- function() {
   }
 
   names(raw) <- tolower(trimws(names(raw)))
-  required <- c("spatial_scale", "reporting_date", "daily_deaths", "cumulative_deaths")
+  # Step 3 now writes deaths by onset date (date_of_symptom_onset_imputed);
+  # older outputs used reporting_date. Accept either.
+  if (!"date_of_symptom_onset_imputed" %in% names(raw) && "reporting_date" %in% names(raw)) {
+    raw$date_of_symptom_onset_imputed <- raw$reporting_date
+  }
+  required <- c("spatial_scale", "date_of_symptom_onset_imputed", "daily_deaths", "cumulative_deaths")
   missing <- setdiff(required, names(raw))
   if (length(missing)) {
     stop(
@@ -586,7 +591,7 @@ load_cumulative_deaths_entries <- function() {
       by_date <- list()
 
       for (i in seq_len(nrow(loc_df))) {
-        date <- parse_date(loc_df$reporting_date[[i]])
+        date <- parse_date(loc_df$date_of_symptom_onset_imputed[[i]])
         if (is.null(date)) {
           next
         }
@@ -995,11 +1000,11 @@ for (entry in deaths_entries) {
 
   caption <- if (length(incomplete_dates)) {
     paste0(
-      "Cumulative confirmed deaths by reporting date (death alerts with confirmed MVE classification). ",
+      "Cumulative confirmed deaths by date of symptom onset (death alerts with confirmed MVE classification). ",
       INCOMPLETE_CAPTION_NOTE
     )
   } else {
-    "Cumulative confirmed deaths by reporting date (death alerts with confirmed MVE classification)"
+    "Cumulative confirmed deaths by date of symptom onset (death alerts with confirmed MVE classification)"
   }
 
   x_max <- if (is.null(x_limits)) max(plot_df$date) else x_limits[[2]]
