@@ -19,6 +19,8 @@
 #     this sync -- else an empty placeholder
 #   - Writes lab_positivity_aggregated.csv: the same Wilson-CI + 5-day-rolling
 #     positivity, but by lab and on lab_analysis_date rather than onset date
+#   - Writes lab_turnaround_summary.csv: per lab, whole-period turnaround
+#     (samples, median, IQR, mean, share within 2 days) for the dashboard table
 #   - Writes lab_turnaround_aggregated.csv: per lab, 5-day sliding-window
 #     turnaround time (days from date_of_sample_collection to
 #     lab_analysis_date) -- median, IQR, mean, and share within 2 days
@@ -557,6 +559,29 @@ if (!"lab_analysis_date" %in% names(processed_dhis2_linelist)) {
     lab_turnaround_csv <- file.path(epi_outputs_dir, "lab_turnaround_aggregated.csv")
     write.csv(lab_turnaround_5day, lab_turnaround_csv, row.names = FALSE)
     message("  Wrote: ", lab_turnaround_csv, " (", nrow(lab_turnaround_5day), " rows)")
+
+    # Whole-period summary per lab (one row each) for the dashboard's lab
+    # table. Not derivable from the rolling file above: overlapping 5-day
+    # windows can't be recombined into an exact overall median.
+    lab_turnaround_summary <- tat_base |>
+      dplyr::group_by(lab_name) |>
+      dplyr::summarise(
+        samples          = dplyr::n(),
+        tat_median       = stats::median(turnaround_days),
+        tat_q25          = stats::quantile(turnaround_days, 0.25, names = FALSE),
+        tat_q75          = stats::quantile(turnaround_days, 0.75, names = FALSE),
+        tat_mean         = mean(turnaround_days),
+        prop_within_2d   = mean(turnaround_days <= 2),
+        first_analysis   = min(lab_analysis_date),
+        last_analysis    = max(lab_analysis_date),
+        .groups = "drop"
+      ) |>
+      dplyr::mutate(lab_name_long = unname(LAB_NAME_MAP[lab_name])) |>
+      dplyr::arrange(dplyr::desc(samples))
+
+    lab_turnaround_summary_csv <- file.path(epi_outputs_dir, "lab_turnaround_summary.csv")
+    write.csv(lab_turnaround_summary, lab_turnaround_summary_csv, row.names = FALSE)
+    message("  Wrote: ", lab_turnaround_summary_csv, " (", nrow(lab_turnaround_summary), " rows)")
   }
 
 } # end if ("lab_analysis_date" %in% names(processed_dhis2_linelist))
@@ -582,7 +607,7 @@ keep_objects <- c(
   keep_objects, "dhis2_linelist_aggregated",
   "dhis2_linelist_aggregated_status", "dhis2_linelist_cumulative_positive_deaths",
   "dhis2_linelist_positivity_aggregated", "lab_positivity_5day",
-  "lab_turnaround_5day"
+  "lab_turnaround_5day", "lab_turnaround_summary"
 )
 
 rm(list = setdiff(ls(), keep_objects), envir = .GlobalEnv)
