@@ -137,6 +137,17 @@
         "min_reference_cases": 100
       }
     },
+    "clinical": {
+      "_comment": "Config for 9-clinical-aggregates.R: summary tables for the dashboard's Clinical Symptoms tab, written to outputs/<DATE>/clinical/. Confirmed cases only. Every count from 1 to min_cell_count - 1 is suppressed (written as NA with suppressed = TRUE, and any percentage or median built on it is dropped) because these tables are published on the public dashboard. Provinces need min_province_cases confirmed cases to get their own tables. Hospital stays and onset-to-admission delays outside [0, max_delay_days] are left out. symptom_age_groups / pyramid_age_band_years set the age groupings; los_bins the length-of-stay histogram bins (lower bounds, days). Keep them equal width so bar heights compare fairly; the last bin runs up to max_delay_days and the dashboard says so.",
+      "classification": "confirmed_case",
+      "min_cell_count": 10,
+      "min_province_cases": 50,
+      "max_delay_days": 60,
+      "symptom_age_groups": [0, 5, 15, 30, 45, 60],
+      "pyramid_age_band_years": 10,
+      "pyramid_top_age": 70,
+      "los_bins": [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28]
+    },
     "across_exports": {
       "_comment": "Running files under outputs/<dir>/ (no date in the path) that build up one export at a time, rather than being rewritten from scratch in each dated outputs/<DATE>/ folder. Each run replaces its own export_date's rows (so reruns/pinned-date runs never duplicate) and fills in any earlier dated folder not in the file yet. Currently written by 6-reporting-backfill.R. status_aggregated_national is every export's national status_aggregated.csv rows stacked, with an export_date column: the epi curve as it looked in each export.",
       "dir": "across_exports",

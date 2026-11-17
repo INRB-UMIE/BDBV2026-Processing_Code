@@ -27,6 +27,7 @@ pipelines/
     ├── 6-reporting-backfill.R              # how complete recent daily counts are, from past exports; updates outputs/across_exports/ -- run by CI
     ├── 7-nowcasting_prep.R                 # manual only, not run by CI
     ├── 8-residence-vs-alert-report.R       # manual only, not run by CI (normally run via step 5)
+    ├── 9-clinical-aggregates.R             # summary tables for the dashboard's Clinical Symptoms tab (outputs/<DATE>/clinical/) -- run by CI
     ├── summary-report.Rmd                  # PDF summary of steps 1-4 (writes 8-summary-report.pdf) -- run by CI
     └── qc_codes.csv
 ```
@@ -69,6 +70,7 @@ Rscript pipelines/epi_linelist_pipeline/4-make-dashboard-plots.R
 Rscript pipelines/epi_linelist_pipeline/5-map-residence-health-areas.R   # manual only -- also runs 8-residence-vs-alert-report.R
 Rscript pipelines/epi_linelist_pipeline/6-reporting-backfill.R           # needs step 3's status_aggregated.csv, for this and past dates
 Rscript pipelines/epi_linelist_pipeline/7-nowcasting_prep.R              # manual only
+Rscript pipelines/epi_linelist_pipeline/9-clinical-aggregates.R          # needs step 2's dhis2_linelist_with_imputed_onset.csv
 ```
 
 Each script resolves the latest synced `data/YYYY-MM-DD/dhis2_processed_linelist_ctsafe.csv` in the data repo automatically -- or a specific date instead, by setting an `EPI_PIPELINE_DATE` (YYYY-MM-DD) environment variable before running any step (e.g. to keep working against yesterday's sync while a newer one is still being checked, or to reproduce a past run). Every step sources `0-setup.R` first, so the override applies uniformly whichever step you start from.
@@ -89,7 +91,7 @@ Where duplicate records disagree, all distinct values are kept, sorted and joine
 
 ## Automatic runs (CI)
 
-`BDBV2026-Processed_Sensitive_Data`'s `.github/workflows/run-processing-code-pipeline.yml` runs **steps 1-4, step 6 and the summary report** automatically, on every push there that adds a new `data/*/dhis2_processed_linelist_ctsafe.csv` (i.e. every ctsafe sync from `BDBV2026-Linelist_Processing`). It checks out this repo, sets `BDBV_DATA_ROOT` explicitly (since CI checkouts aren't literal sibling folders), runs steps 1-4, then step 6 (allowed to fail without blocking the rest, as its outputs are diagnostic only), then renders the summary report, and commits the results back to the data repo. Steps 5, 7 and 8 (residence mapping, nowcasting prep, residence-vs-alert reporting) are deliberately not part of this automatic run yet -- run them manually as above, or extend the workflow if/when that changes.
+`BDBV2026-Processed_Sensitive_Data`'s `.github/workflows/run-processing-code-pipeline.yml` runs **steps 1-4, step 6, step 9 and the summary report** automatically, on every push there that adds a new `data/*/dhis2_processed_linelist_ctsafe.csv` (i.e. every ctsafe sync from `BDBV2026-Linelist_Processing`). It checks out this repo, sets `BDBV_DATA_ROOT` explicitly (since CI checkouts aren't literal sibling folders), runs steps 1-4, then step 6 (allowed to fail without blocking the rest, as its outputs are diagnostic only), then step 9 (clinical tables for the dashboard, likewise allowed to fail), then renders the summary report, and commits the results back to the data repo. Steps 5, 7 and 8 (residence mapping, nowcasting prep, residence-vs-alert reporting) are deliberately not part of this automatic run yet -- run them manually as above, or extend the workflow if/when that changes.
 
 The same workflow can also be triggered manually (Actions -> "Run Processing_Code pipeline" -> Run workflow) with an optional `pipeline_date` input, which sets `EPI_PIPELINE_DATE` for that run -- leave it blank to use the latest synced date, as usual. The `not_a_case` delay distribution fits in step 1 are **skipped by default** (on push-triggered runs and local runs alike) for speed; the `cases` fits used for date imputation always run. To fit `not_a_case` too, set `SKIP_NOT_A_CASE_DELAY_FIT=false` locally, or untick the `skip_not_a_case_delay_fit` checkbox on a manual run.
 
