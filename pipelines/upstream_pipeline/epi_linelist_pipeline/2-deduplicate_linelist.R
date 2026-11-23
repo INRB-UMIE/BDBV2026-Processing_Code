@@ -511,29 +511,104 @@ dlog("  Distinct blocking tokens: ", length(blk_tok_freq),
 
 groups <- split(blk_row, blk_tok)
 groups <- groups[lengths(groups) > 1L]
-pair_mat <- do.call(rbind, lapply(groups, dedup_make_pairs))
-
-if (is.null(pair_mat) || !nrow(pair_mat)) {
-  dlog("  No candidate pairs after blocking — nothing to review.")
-  pair_mat <- matrix(integer(0), ncol = 2, dimnames = list(NULL, c("a", "b")))
-}
-pair_mat <- unique(pair_mat)
-dlog("  Candidate pairs after blocking: ", nrow(pair_mat),
-     "  (all possible pairs would be ",
-     format(choose(sum(usable), 2), big.mark = ",", scientific = FALSE), ")")
-
-
-# -------------------------  Global name-distance gate  ------------------------
+# ---- Candidate pairs + name-distance gate, in chunks -------------------------
+# Memory: building every candidate pair first (~96 million and growing) and then
+# gating them needed several GB at once, and the process was killed. Pairs are
+# now built a chunk at a time (about PAIR_CHUNK pairs), gated straight away, and
+# only the ~3% that pass are kept. The accepted pairs, and their order, are the
+# same as before: groups are walked in the same order and the first occurrence
+# of a pair is the one kept.
+PAIR_CHUNK <- 5e6
 
 dlog("\nNAME DISTANCE GATE (Jaro-Winkler <= ", GLOBAL_MAX_DIST, ")")
-ia <- pair_mat[, 1]; ib <- pair_mat[, 2]
 
-d_concat <- stringdist::stringdist(nm_concat[ia], nm_concat[ib], method = "jw", p = 0.1)
-d_sorted <- stringdist::stringdist(nm_sorted[ia], nm_sorted[ib], method = "jw", p = 0.1)
-g_dist <- pmin(d_concat, d_sorted, na.rm = TRUE)
+# A pair (a < b) as one number, so repeats can be removed cheaply. Row ids are
+# well under 1e8, so a * base + b is exact in a double.
+pair_key_base <- as.numeric(length(nm_concat)) + 1
 
-keep <- !is.na(g_dist) & g_dist <= GLOBAL_MAX_DIST
-ia <- ia[keep]; ib <- ib[keep]; g_dist <- g_dist[keep]
+# Pairs for left positions lo..hi of one group's sorted ids (all pairs of the
+# group when lo = 1 and hi = m - 1). Same pairs as dedup_make_pairs().
+dedup_make_pairs_range <- function(v, lo, hi) {
+  m <- length(v)
+  ks <- lo:hi
+  i <- rep.int(ks, times = m - ks)
+  j <- unlist(lapply(ks, function(k) (k + 1L):m), use.names = FALSE)
+  cbind(a = v[i], b = v[j])
+}
+
+# Remove repeats inside the chunk, then apply the gate. Returns the survivors.
+gate_chunk <- function(pm) {
+  if (is.null(pm) || !nrow(pm)) return(NULL)
+  key <- (pm[, 1] - 1) * pair_key_base + pm[, 2]
+  first <- !duplicated(key)
+  pm <- pm[first, , drop = FALSE]
+  key <- key[first]
+  a <- pm[, 1]; b <- pm[, 2]
+  d_concat <- stringdist::stringdist(nm_concat[a], nm_concat[b], method = "jw", p = 0.1)
+  d_sorted <- stringdist::stringdist(nm_sorted[a], nm_sorted[b], method = "jw", p = 0.1)
+  g <- pmin(d_concat, d_sorted, na.rm = TRUE)
+  ok <- !is.na(g) & g <= GLOBAL_MAX_DIST
+  list(n = length(a), a = a[ok], b = b[ok], g = g[ok], key = key[ok])
+}
+
+gate_state <- new.env()
+gate_state$kept <- list()
+gate_state$n_compared <- 0
+gate_add <- function(pm) {
+  r <- gate_chunk(pm)
+  if (is.null(r)) return(invisible())
+  gate_state$n_compared <- gate_state$n_compared + r$n
+  gate_state$kept[[length(gate_state$kept) + 1L]] <- r[c("a", "b", "g", "key")]
+  invisible()
+}
+
+pending <- list(); pending_n <- 0
+for (gi in seq_along(groups)) {
+  v <- sort(unique(groups[[gi]]))
+  m <- length(v)
+  if (m < 2L) next
+  n_pairs_g <- m * (m - 1) / 2
+  if (n_pairs_g > PAIR_CHUNK) {
+    # One very common token: flush what is waiting, then do it in slices.
+    if (length(pending)) { gate_add(do.call(rbind, pending)); pending <- list(); pending_n <- 0 }
+    lo <- 1L
+    while (lo <= m - 1L) {
+      # Largest hi such that the slice stays within PAIR_CHUNK pairs.
+      cum <- cumsum(m - lo:(m - 1L))
+      hi <- lo + max(1L, sum(cum <= PAIR_CHUNK)) - 1L
+      gate_add(dedup_make_pairs_range(v, lo, hi))
+      lo <- hi + 1L
+    }
+  } else {
+    pending[[length(pending) + 1L]] <- dedup_make_pairs_range(v, 1L, m - 1L)
+    pending_n <- pending_n + n_pairs_g
+    if (pending_n >= PAIR_CHUNK) {
+      gate_add(do.call(rbind, pending)); pending <- list(); pending_n <- 0
+    }
+  }
+}
+if (length(pending)) { gate_add(do.call(rbind, pending)); pending <- list() }
+rm(groups, pending); invisible(gc())
+
+kept <- gate_state$kept
+if (!length(kept)) {
+  dlog("  No candidate pairs after blocking — nothing to review.")
+  ia <- integer(0); ib <- integer(0); g_dist <- numeric(0)
+} else {
+  ia <- unlist(lapply(kept, `[[`, "a"), use.names = FALSE)
+  ib <- unlist(lapply(kept, `[[`, "b"), use.names = FALSE)
+  g_dist <- unlist(lapply(kept, `[[`, "g"), use.names = FALSE)
+  pair_keys <- unlist(lapply(kept, `[[`, "key"), use.names = FALSE)
+  # A pair that shares several tokens can sit in more than one chunk. Keep the
+  # first occurrence, as unique() used to.
+  first_seen <- !duplicated(pair_keys)
+  ia <- ia[first_seen]; ib <- ib[first_seen]; g_dist <- g_dist[first_seen]
+  rm(kept, pair_keys, first_seen)
+}
+rm(gate_state); invisible(gc())
+dlog("  Pairs compared (a pair sharing several tokens may be compared more than once; ",
+     "all possible pairs would be ",
+     format(choose(sum(usable), 2), big.mark = ",", scientific = FALSE), ")")
 dlog("  Pairs passing the gate: ", length(ia))
 
 if (!length(ia)) {
