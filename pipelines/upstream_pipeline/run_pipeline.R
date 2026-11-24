@@ -8,11 +8,11 @@
 #
 #   Rscript --no-init-file pipelines/run_pipeline.R <job> [options]
 #
-#   <job>       full | epi | ct | ct_combine | identify | ledger | nightly
+#   <job>       full | epi | ct | ct_combine | identify | rarity | ledger | nightly
 #               (nightly = full if any raw export is not yet processed,
 #               otherwise ledger: link ledger + person registry only)
 #   --repo DIR  repo root (default: the working directory)
-#   --trigger   app | nightly | manual -- recorded, shown in the app
+#   --trigger   app | nightly | weekly | manual -- recorded, shown in the app
 #   --by NAME   who started it from the app
 #   --epi S,S   linelist export stems to (re)process     (full, epi)
 #   --ct S,S    contact tracing export stems to (re)process (full, ct)
@@ -128,12 +128,16 @@ local({
     list())
 
   last_step <- ""
+  step_marks <- list()   # when each [n/N] step started, for the timing table below
   ok <- tryCatch({
     withCallingHandlers(
       do.call(app_fns[[jobs[[job]]$fn]], c(list(repo_root = repo_root), job_args)),
       message = function(m) {
         t <- trimws(conditionMessage(m))
-        if (grepl("^\\[[0-9]+[a-z]?/[0-9]+\\]", t)) last_step <<- t
+        if (grepl("^\\[[0-9]+[a-z]?/[0-9]+\\]", t)) {
+          last_step <<- t
+          step_marks[[length(step_marks) + 1L]] <<- list(label = t, at = as.numeric(Sys.time()))
+        }
       })
     TRUE
   }, error = function(e) {
@@ -145,6 +149,14 @@ local({
   finished <- Sys.time()
   mins <- round(as.numeric(difftime(finished, started, units = "mins")), 1)
   message(stamp(), "  ", if (ok) "finished" else "FAILED", " after ", mins, " min")
+  # How long each step took (start of one marker to the start of the next; the
+  # last runs to the end). Without this the log shows no times per step.
+  if (length(step_marks)) {
+    ends <- c(vapply(step_marks[-1], function(s) s$at, numeric(1)), as.numeric(finished))
+    message("  Step timings (minutes):")
+    for (i in seq_along(step_marks))
+      message(sprintf("    %7.1f  %s", (ends[i] - step_marks[[i]]$at) / 60, step_marks[[i]]$label))
+  }
   sink(type = "message"); sink(); close(con)
 
   setwd(repo_root)   # the steps may have moved it
