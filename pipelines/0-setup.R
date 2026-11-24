@@ -367,8 +367,22 @@ parse_synced_date_dir <- function(dirname_) {
   tryCatch(as.Date(dirname_), error = function(e) as.Date(NA))
 }
 
+#' The synced ctsafe files may be stored gzipped (`<name>.csv.gz`) or plain
+#' (`<name>.csv`); a date folder can hold either, and old dates stay plain until
+#' they are backfilled. `ctsafe_path()` returns the `.gz` path when that file
+#' exists, otherwise the path unchanged (so "not found" messages still name the
+#' plain file). `ctsafe_exists()` is TRUE if either form exists. Both are
+#' vectorised. read.csv() and readr read `.gz` directly.
+ctsafe_path <- function(path) {
+  gz <- paste0(path, ".gz")
+  ifelse(file.exists(gz), gz, path)
+}
+ctsafe_exists <- function(path) {
+  file.exists(path) | file.exists(paste0(path, ".gz"))
+}
+
 #' Return the full path to the latest synced `data/YYYY-MM-DD` folder (under
-#' data_root) that contains a `dhis2_processed_linelist_ctsafe.csv` file. This
+#' data_root) that contains a `dhis2_processed_linelist_ctsafe.csv` (or `.csv.gz`) file. This
 #' replaces Secure's `resolve_epi_latest_dir()` (which reads a `latest.json`
 #' written by step 1) — this repo has no step 1 and no latest.json, so we
 #' derive "latest" directly from the synced date folders each time it's called.
@@ -384,7 +398,7 @@ resolve_epi_latest_dir <- function(processed_dir = file.path(data_root, "data"))
   date_dirs <- list.dirs(data_dir, full.names = FALSE, recursive = FALSE)
   dates <- vapply(date_dirs, parse_synced_date_dir, as.Date(NA))
   has_ctsafe <- vapply(date_dirs, function(d) {
-    file.exists(file.path(data_dir, d, "dhis2_processed_linelist_ctsafe.csv"))
+    ctsafe_exists(file.path(data_dir, d, "dhis2_processed_linelist_ctsafe.csv"))
   }, logical(1))
   valid <- !is.na(dates) & has_ctsafe
   if (!any(valid)) {
@@ -411,7 +425,7 @@ resolve_epi_latest_dir <- function(processed_dir = file.path(data_root, "data"))
 epi_pipeline_date_override <- Sys.getenv("EPI_PIPELINE_DATE", "")
 if (nzchar(epi_pipeline_date_override)) {
   epi_latest_dir <- file.path(data_root, "data", epi_pipeline_date_override)
-  if (!file.exists(file.path(epi_latest_dir, "dhis2_processed_linelist_ctsafe.csv"))) {
+  if (!ctsafe_exists(file.path(epi_latest_dir, "dhis2_processed_linelist_ctsafe.csv"))) {
     stop(
       "EPI_PIPELINE_DATE is set to '", epi_pipeline_date_override,
       "' but ", epi_latest_dir, " has no dhis2_processed_linelist_ctsafe.csv.",
@@ -433,8 +447,8 @@ resolve_ct_latest_dir <- function(ct_file = pipeline_configs$contact_tracing$dat
                                   linelist_file = pipeline_configs$contact_tracing$data$files$linelist) {
   data_dir <- file.path(data_root, "data")
   has_both <- function(d) {
-    file.exists(file.path(data_dir, d, ct_file)) &&
-      file.exists(file.path(data_dir, d, linelist_file))
+    ctsafe_exists(file.path(data_dir, d, ct_file)) &&
+      ctsafe_exists(file.path(data_dir, d, linelist_file))
   }
 
   override <- Sys.getenv("CT_PIPELINE_DATE", "")
@@ -696,6 +710,7 @@ load_lab_location_map <- function(name = "lab_location_map", maps_dir = file.pat
 #'     via parse_linelist_date(), instead of leaving them as strings for each
 #'     downstream script to reparse on its own
 load_linelist_properly <- function(path, date_columns = NULL) {
+  path <- ctsafe_path(path)   # use <path>.gz when the synced file is gzipped
   if (!file.exists(path)) {
     stop("Linelist not found: ", path, call. = FALSE)
   }
@@ -775,6 +790,7 @@ keep_objects <- c("keep_objects", "setup_complete", "get_script_dir",
                   "code_root", "data_root", "pipeline_configs",
                   "resolve_code_root", "resolve_data_root",
                   "resolve_epi_latest_dir", "epi_latest_dir", "parse_dhis2_linelist_date",
+                  "ctsafe_path", "ctsafe_exists",
                   "resolve_ct_latest_dir", "collapse_values",
                   "parse_synced_date_dir", "dhis2_force_stems",
                   "parse_linelist_date", "load_linelist_properly", "load_map_csv",

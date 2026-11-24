@@ -40,7 +40,7 @@ message("")
 message("A. LOADING DATA")
 
 ct_raw <- read.csv(
-  file.path(ct_dir, ct_cfg$data$files$contact_tracing),
+  ctsafe_path(file.path(ct_dir, ct_cfg$data$files$contact_tracing)),   # .csv.gz when gzipped
   stringsAsFactors = FALSE, check.names = FALSE, colClasses = "character",
   na.strings = c("", "NA", "N/A")
 )

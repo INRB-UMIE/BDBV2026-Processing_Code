@@ -454,7 +454,7 @@ linelist_label <- basename(epi_dir)   # e.g. "2026-07-14"
 # via the parse_dhis2_linelist_date() helper adapted in 0-setup.R.
 linelist_meta <- parse_dhis2_linelist_date(epi_dir)
 
-input_csv <- file.path(epi_dir, "dhis2_processed_linelist_ctsafe.csv")
+input_csv <- ctsafe_path(file.path(epi_dir, "dhis2_processed_linelist_ctsafe.csv"))   # .csv.gz when gzipped
 shp_path <- file.path(
   data_root,
   "assets", "geo", "rdc_aires-de-sante",
